@@ -20,6 +20,8 @@ packages = ["src/signalbox"]
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+# spikes/restate only; see its README. Not needed by signalbox itself.
+restate-spike = ["restate-sdk[serde]==1.0.5", "hypercorn>=0.17", "pytest>=8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
