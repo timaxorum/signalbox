@@ -889,6 +889,16 @@ args = ["-s", "branch.rebase-attempted", "--publish-as", "branch.rebase-invalid-
 subscribes = ["branch.rebase-attempted"]
 publishes = ["branch.rebase-invalid-verdict"]
 
+# run-suite is a deliberate global lock, an exception to the DEPTH/WIDTH
+# rationale above: on 2026-10-26 (internal #438), four axorum suites ran together
+# at load 166 on 48 cores and caused spurious HTTP 408 failures.
+# The exec-handler timer start point is unverified from this repo, which has no
+# exec-handler source; it may include time queued behind another suite. The
+# outer -t is therefore a two-hour backstop, not the suite budget. signalbox
+# run-suite enforces its own 30-minute budget only after acquiring the suite
+# lock, which also serializes suites across engine processes. An outer timeout
+# abandons the wait without killing the process.
+#
 # A red suite is evidence for the promotion gate, not an invocation error:
 # ok: false must still become suite.ran so assess can turn it into block. Only
 # errored says the detected suite could not be invoked and belongs on the
@@ -897,7 +907,7 @@ publishes = ["branch.rebase-invalid-verdict"]
 name = "run-suite"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "branch.rebased", "--publish-as", "suite.run-attempted",
-        "-t", "1800000", "--", "signalbox", "run-suite"]
+        "-t", "7200000", "--max-concurrent", "1", "--", "signalbox", "run-suite"]
 subscribes = ["branch.rebased"]
 publishes = ["suite.run-attempted"]
 

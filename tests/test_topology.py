@@ -1220,6 +1220,15 @@ def max_concurrent(primitive: dict) -> int:
     return int(flags[flags.index("--max-concurrent") + 1]) if "--max-concurrent" in flags else 1
 
 
+def test_run_suite_explicitly_serializes_suite_execution():
+    """2026-10-26, internal #438: four axorum suites caused HTTP 408s at load 166."""
+    suite = named(HANDLERS, "run-suite")
+    args = suite["args"]
+    flags = args[:args.index("--")]
+    assert "--max-concurrent" in flags, "suite serialization must be explicit"
+    assert flags[flags.index("--max-concurrent") + 1] == "1"
+
+
 @pytest.mark.parametrize("node_name", MODEL_NODES)
 def test_no_model_node_consumes_its_subscription_serially(node_name):
     """A serial model node is a global lock wearing an event subscription.
