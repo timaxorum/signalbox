@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -878,6 +880,7 @@ def test_run_suite_distinguishes_no_worktree_from_no_suite(tmp_path, monkeypatch
     assert result["errored"] is False
     assert result["passed"] == result["failed"] == 0
     assert "no worktree" in result["reason"]
+    assert not (tmp_path / "locks").exists()
 
 
 def test_run_suite_contract_for_pass_and_failure(tmp_path, monkeypatch):
@@ -905,6 +908,51 @@ def test_run_suite_contract_for_pass_and_failure(tmp_path, monkeypatch):
         "ran": True, "ok": False, "passed": 264, "failed": 3, "errored": False,
     }
     assert failed["run_id"] == "sb-suite"
+
+
+@pytest.mark.parametrize("outcome", ["success", "oserror", "unexpected", "timeout"])
+def test_run_suite_holds_and_releases_the_global_lock(tmp_path, monkeypatch, outcome):
+    from signalbox import acts
+
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    root = tmp_path / "worktrees" / "sb-suite"
+    root.mkdir(parents=True)
+    command = ["runner", "test"]
+    monkeypatch.setattr(acts, "suite_command", lambda root: command)
+    lock_path = tmp_path / "locks" / "suite.lock"
+    invoked = []
+
+    def fake_run(cmd, cwd=None, timeout=120):
+        invoked.append((cmd, cwd, timeout))
+        with lock_path.open("a") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if outcome == "oserror":
+            raise OSError("runner unavailable")
+        if outcome == "unexpected":
+            raise RuntimeError("unexpected failure")
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        return 0, "1 passed", ""
+
+    monkeypatch.setattr(acts, "_run", fake_run)
+    if outcome == "unexpected":
+        with pytest.raises(RuntimeError, match="unexpected failure"):
+            acts.run_suite({"run_id": "sb-suite"})
+    else:
+        result = acts.run_suite({"run_id": "sb-suite"})
+        assert result["ok"] is (outcome == "success")
+        assert result["errored"] is (outcome != "success")
+        if outcome == "timeout":
+            assert result["ran"] is False
+            assert result["passed"] == result["failed"] == 0
+            assert result["reason"] == "the suite did not finish within 30 minutes"
+            assert result["run_id"] == "sb-suite"
+
+    assert invoked == [(command, str(root), 1800)]
+    with lock_path.open("a") as contender:
+        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(contender, fcntl.LOCK_UN)
 
 
 def test_suite_counts_accumulate_cargo_test_binaries():
@@ -936,6 +984,7 @@ def test_run_suite_contract_for_absent_and_uninvokable_suite(tmp_path, monkeypat
     assert unavailable["ok"] is False
     assert unavailable["errored"] is True
     assert unavailable["passed"] == unavailable["failed"] == 0
+    assert not (tmp_path / "locks").exists()
 
 
 def test_a_uv_managed_project_is_reached_through_its_manager(tmp_path):

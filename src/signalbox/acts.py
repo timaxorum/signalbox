@@ -12,6 +12,7 @@ touch the same path. It is why there are no per-shard branches to merge.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -309,7 +310,21 @@ def run_suite(payload: dict) -> dict:
             "errored": False, "reason": "no suite detected",
         }
     try:
-        code, out, err = _run(cmd, cwd=str(root), timeout=1800)
+        lock_path = state_dir() / "locks" / "suite.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a") as lock:
+            # Shared across runs and engine processes. Waiting for another
+            # suite must not consume this suite's 30-minute execution budget.
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                code, out, err = _run(cmd, cwd=str(root), timeout=1800)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+    except subprocess.TimeoutExpired:
+        return {
+            **payload, "ran": False, "ok": False, "passed": 0, "failed": 0,
+            "errored": True, "reason": "the suite did not finish within 30 minutes",
+        }
     except OSError as exc:
         return {
             **payload, "ran": False, "ok": False, "passed": 0, "failed": 0,
