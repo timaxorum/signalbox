@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from signalbox.paths import (
@@ -286,63 +287,165 @@ def suite_counts(output: str) -> tuple[int, int]:
     return 0, 0
 
 
+SUITE_BUILD_FILES = (
+    "Cargo.toml", "Cargo.lock", "pyproject.toml", "package.json", "package-lock.json",
+    "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "uv.lock", "rust-toolchain",
+    "rust-toolchain.toml", ".cargo/", ".github/", ".circleci/", ".gitlab-ci.yml",
+    "azure-pipelines.yml", "Jenkinsfile", "Makefile", "Dockerfile", "tox.ini",
+    "pytest.ini", "setup.py", "setup.cfg",
+)
+
+
+def _diff_marker(root: Path) -> str | None:
+    for marker, _ in SUITE_COMMANDS:
+        if not (root / marker).is_file():
+            continue
+        if marker == "package.json":
+            try:
+                data = json.loads((root / marker).read_text())
+                if not isinstance(data.get("scripts"), dict) or not data["scripts"].get("test"):
+                    continue
+            except (OSError, ValueError, AttributeError):
+                continue
+        return marker
+    return None
+
+
+def _select_suites(root, paths, run):
+    selected, unmapped, cache = {}, [], {}
+    for path in paths:
+        changed = root / path
+        directory = changed.parent
+        marker = None
+        while directory.is_relative_to(root):
+            marker = _diff_marker(directory)
+            if marker or directory == root:
+                break
+            directory = directory.parent
+        if marker is None:
+            unmapped.append(path)
+            continue
+        packages = set()
+        if marker == "Cargo.toml":
+            if directory not in cache:
+                code, out, err = run(["cargo", "metadata", "--format-version", "1"], directory)
+                if code:
+                    raise ValueError("cargo metadata failed: " + err)
+                cache[directory] = json.loads(out)
+            meta = cache[directory]
+            workspace = Path(meta["workspace_root"]).resolve()
+            if not workspace.is_relative_to(root):
+                raise ValueError("cargo workspace outside worktree")
+            cache[workspace] = meta
+            members = set(meta["workspace_members"])
+            owned = [p for p in meta["packages"] if p["id"] in members and
+                     changed.resolve().is_relative_to(Path(p["manifest_path"]).parent.resolve())]
+            if not owned:
+                unmapped.append(path)
+                continue
+            owner = max(owned, key=lambda p: len(Path(p["manifest_path"]).parts))
+            affected = {owner["id"]}
+            while True:
+                expanded = affected | {n["id"] for n in meta["resolve"]["nodes"]
+                    if n["id"] in members and affected.intersection(n["dependencies"])}
+                if expanded == affected:
+                    break
+                affected = expanded
+            packages = {p["name"] for p in meta["packages"] if p["id"] in affected}
+            directory = workspace
+        selected.setdefault((directory, marker), set()).update(packages)
+    suites = []
+    for (directory, marker), packages in selected.items():
+        cmd = next((list(c) for c in dict(SUITE_COMMANDS)[marker] if shutil.which(c[0])
+                    and (c[:2] != ["cargo", "nextest"] or shutil.which("cargo-nextest"))), None)
+        if cmd:
+            for package in sorted(packages):
+                cmd += ["-p", package]
+        suites.append((directory, cmd))
+    return suites, unmapped
+
+
 def run_suite(payload: dict) -> dict:
+    result = {**payload, "ran": False, "ok": False, "passed": 0, "failed": 0,
+              "errored": False, "exit_code": 0, "command": "", "output": "",
+              "suites": [], "suite_scope": "full"}
+    deadline = time.monotonic() + 1800
+
+    def run(cmd, directory):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("suite handler budget exhausted")
+        return _run(cmd, cwd=str(directory), timeout=remaining)
+
     try:
         root = require_worktree(payload)
     except WorktreeMissing as exc:
-        # Distinct from "this repo has no suite": we could not even look.
-        return {
-            **payload, "ran": False, "ok": False, "passed": 0, "failed": 0,
-            "errored": False, "reason": str(exc),
-        }
-    cmd = suite_command(root)
-    if cmd is None:
-        detected = [marker for marker, _ in SUITE_COMMANDS if (root / marker).exists()]
-        if detected:
-            return {
-                **payload, "ran": False, "ok": False, "passed": 0, "failed": 0,
-                "errored": True,
-                "reason": f"suite detected but no runner available ({detected[0]})",
-            }
-        # Absence is a fact worth publishing, not a pass.
-        return {
-            **payload, "ran": False, "ok": False, "passed": 0, "failed": 0,
-            "errored": False, "reason": "no suite detected",
-        }
+        return {**result, "reason": str(exc)}
     try:
-        lock_path = state_dir() / "locks" / "suite.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        with lock_path.open("a") as lock:
-            # Shared across runs and engine processes. Waiting for another
-            # suite must not consume this suite's 30-minute execution budget.
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            try:
-                code, out, err = _run(cmd, cwd=str(root), timeout=1800)
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
-    except subprocess.TimeoutExpired:
-        return {
-            **payload, "ran": False, "ok": False, "passed": 0, "failed": 0,
-            "errored": True, "reason": "the suite did not finish within 30 minutes",
-        }
-    except OSError as exc:
-        return {
-            **payload, "ran": False, "ok": False, "passed": 0, "failed": 0,
-            "errored": True, "reason": f"suite runner could not be invoked: {exc}",
-        }
-    output = (out + "\n" + err).strip()
-    passed, failed = suite_counts(output)
-    return {
-        **payload,
-        "ran": True,
-        "ok": code == 0,
-        "passed": passed,
-        "failed": failed,
-        "errored": False,
-        "exit_code": code,
-        "command": " ".join(cmd),
-        "output": output[-8000:],
-    }
+        # Rebase runs first: using its target excludes upstream commits that
+        # would otherwise appear in the original base_sha..HEAD diff.
+        base = payload.get("rebased_onto_sha") or payload.get("base_sha")
+        if not base:
+            raise ValueError("diff base unavailable")
+        code, out, err = run(["git", "diff", "--name-only", f"{base}..HEAD"], root)
+        if code:
+            raise ValueError("diff could not be computed: " + err)
+        paths = out.splitlines()
+        if not paths:
+            raise ValueError("empty diff")
+        if any(path == item or (item.endswith("/") and path.startswith(item))
+               for path in paths for item in SUITE_BUILD_FILES):
+            raise ValueError("root build or CI file changed")
+        suites, unmapped = _select_suites(root, paths, run)
+        if unmapped:
+            result["changed_paths_unmapped"] = unmapped
+            raise ValueError("changed paths have no suite root")
+        result["suite_scope"] = "diff"
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired, TimeoutError) as exc:
+        result["fallback_reason"] = str(exc)
+        suites = [(root, suite_command(root))]
+    for directory, cmd in suites:
+        if cmd is None:
+            detected = [m for m, _ in SUITE_COMMANDS if (directory / m).exists()]
+            result.update(errored=bool(detected), reason=(
+                f"suite detected but no runner available ({detected[0]})" if detected
+                else "no suite detected"))
+            return result
+    lock_path = state_dir() / "locks" / "suite.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    outputs = []
+    with lock_path.open("a") as lock:
+        # Shared across runs and engine processes. Waiting for another
+        # suite must not consume this suite's 30-minute execution budget.
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            deadline = time.monotonic() + 1800
+            for directory, cmd in suites:
+                try:
+                    code, out, err = run(cmd, directory)
+                except (subprocess.TimeoutExpired, TimeoutError):
+                    result.update(errored=True, exit_code=result["exit_code"] or 1,
+                                  reason="the suite did not finish within 30 minutes")
+                    return result
+                except OSError as exc:
+                    result.update(errored=True, exit_code=result["exit_code"] or 1,
+                                  reason=f"suite runner could not be invoked: {exc}")
+                    return result
+                output = (out + "\n" + err).strip()
+                passed, failed = suite_counts(output)
+                result["suites"].append({"root": directory.relative_to(root).as_posix(),
+                    "command": " ".join(cmd), "exit_code": code, "passed": passed, "failed": failed})
+                result["ran"] = True
+                result["passed"] += passed
+                result["failed"] += failed
+                result["exit_code"] = result["exit_code"] or code
+                result["command"] = "; ".join(s["command"] for s in result["suites"])
+                outputs.append(output)
+                result["output"] = "\n".join(outputs)[-8000:]
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    result["ok"] = result["ran"] and result["exit_code"] == 0
+    return result
 
 
 # ── stage landing ────────────────────────────────────────────────────────────

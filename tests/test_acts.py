@@ -949,7 +949,8 @@ def test_run_suite_holds_and_releases_the_global_lock(tmp_path, monkeypatch, out
             assert result["reason"] == "the suite did not finish within 30 minutes"
             assert result["run_id"] == "sb-suite"
 
-    assert invoked == [(command, str(root), 1800)]
+    assert [(cmd, cwd) for cmd, cwd, _ in invoked] == [(command, str(root))]
+    assert 1790 < invoked[0][2] <= 1800
     with lock_path.open("a") as contender:
         fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(contender, fcntl.LOCK_UN)
@@ -1117,3 +1118,155 @@ def test_release_carries_run_identity_through_to_the_verdict(tmp_path, monkeypat
         (0, "", ""),
     ])
     assert result["run_id"] == "sb-69"
+
+
+@pytest.mark.parametrize("change,scope", [
+    ("clients/typescript/src/index.ts", "diff"),
+    ("Cargo.toml", "full"), ("Cargo.lock", "full"), ("", "full"),
+    ("unowned/readme.md", "full"),
+])
+def test_suite_diff_selection(tmp_path, monkeypatch, change, scope):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    root = tmp_path / "worktrees" / "scoped"
+    client = root / "clients/typescript"
+    client.mkdir(parents=True)
+    (root / "Cargo.toml").write_text("[workspace]")
+    (client / "package.json").write_text('{"scripts":{"test":"vitest"}}')
+    monkeypatch.setattr(acts.shutil, "which", lambda name: "/bin/" + name)
+    calls = []
+
+    def run(cmd, cwd=None, timeout=120):
+        calls.append((cmd, cwd))
+        if cmd[:2] == ["git", "diff"]:
+            assert cmd[-1] == "rebased..HEAD"
+            return 0, change, ""
+        if cmd[:2] == ["cargo", "metadata"]:
+            return 1, "", "no owner"
+        return 0, "3 passed", ""
+
+    monkeypatch.setattr(acts, "_run", run)
+    result = acts.run_suite({"run_id": "scoped", "base_sha": "old", "rebased_onto_sha": "rebased"})
+    assert result["suite_scope"] == scope
+    assert result["ok"] is True
+    assert result["passed"] == 3
+    assert result["command"] == ("pnpm test" if scope == "diff" else "cargo nextest run")
+    assert result["suites"] == [{"root": "clients/typescript" if scope == "diff" else ".",
+        "command": result["command"], "exit_code": 0, "passed": 3, "failed": 0}]
+    assert calls[-1][1] == str(client if scope == "diff" else root)
+    if scope == "full":
+        assert result["fallback_reason"]
+
+
+@pytest.mark.parametrize("nextest", [True, False])
+def test_cargo_diff_includes_reverse_workspace_dependencies(tmp_path, monkeypatch, nextest):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    root = tmp_path / "worktrees/cargo"
+    for name in ("a", "b", "c"):
+        directory = root / name
+        directory.mkdir(parents=True)
+        (directory / "Cargo.toml").write_text("[package]")
+    (root / "Cargo.toml").write_text("[workspace]")
+    meta = {"workspace_root": str(root), "workspace_members": ["a", "b", "c"],
+        "packages": [{"id": n, "name": n, "manifest_path": str(root / n / "Cargo.toml")}
+                     for n in ("a", "b", "c")],
+        "resolve": {"nodes": [{"id": "a", "dependencies": []},
+            {"id": "b", "dependencies": ["a"]}, {"id": "c", "dependencies": []}]}}
+    monkeypatch.setattr(acts.shutil, "which", lambda n: None if n == "cargo-nextest" and not nextest else n)
+    calls = []
+
+    def run(cmd, cwd=None, timeout=120):
+        calls.append((cmd, cwd))
+        if cmd[:2] == ["git", "diff"]:
+            return 0, "a/Cargo.toml\na/src/lib.rs", ""
+        if cmd[:2] == ["cargo", "metadata"]:
+            return 0, json.dumps(meta), ""
+        return 0, "test result: ok. 4 passed; 0 failed", ""
+
+    monkeypatch.setattr(acts, "_run", run)
+    result = acts.run_suite({"run_id": "cargo", "base_sha": "base"})
+    expected = ["cargo", "nextest", "run"] if nextest else ["cargo", "test"]
+    assert calls[-1] == (expected + ["-p", "a", "-p", "b"], str(root))
+    assert result["suite_scope"] == "diff"
+    assert len(result["suites"]) == 1
+
+
+def test_diff_package_without_test_is_unmapped(tmp_path, monkeypatch):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    root = tmp_path / "worktrees/absent"
+    (root / "client").mkdir(parents=True)
+    (root / "client/package.json").write_text("{}")
+    monkeypatch.setattr(acts, "_run", lambda *a, **k: (0, "client/index.ts", ""))
+    result = acts.run_suite({"run_id": "absent", "base_sha": "base"})
+    assert result["changed_paths_unmapped"] == ["client/index.ts"]
+    assert result["ran"] is result["errored"] is False
+    assert result["reason"] == "no suite detected"
+
+
+@pytest.mark.parametrize("mode", ["failure", "timeout", "budget"])
+def test_multiple_diff_suites_share_budget_and_report_results(tmp_path, monkeypatch, mode):
+    from signalbox import acts
+    import subprocess
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    root = tmp_path / "worktrees/multi"
+    for name in ("one", "two"):
+        (root / name).mkdir(parents=True)
+        (root / name / "pyproject.toml").write_text("")
+    monkeypatch.setattr(acts.shutil, "which", lambda n: n)
+    elapsed = [0]
+    monkeypatch.setattr(acts.time, "monotonic", lambda: elapsed[0])
+    timeouts = []
+
+    def run(cmd, cwd=None, timeout=120):
+        if cmd[0] == "git":
+            return 0, "one/a.py\ntwo/b.py", ""
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            elapsed[0] = 1801 if mode == "budget" else 100
+            return 0, "2 passed", ""
+        if mode == "timeout":
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        return 7, "1 failed, 3 passed", ""
+
+    monkeypatch.setattr(acts, "_run", run)
+    result = acts.run_suite({"run_id": "multi", "base_sha": "base"})
+    assert result["ran"] is True
+    assert result["ok"] is False
+    assert result["suite_scope"] == "diff"
+    assert timeouts[0] == 1800
+    if mode == "failure":
+        assert result["command"] == "uv run pytest -q; uv run pytest -q"
+        assert [s["root"] for s in result["suites"]] == ["one", "two"]
+        assert (result["passed"], result["failed"], result["exit_code"]) == (5, 1, 7)
+        assert result["errored"] is False
+    else:
+        assert result["errored"] is True
+        assert result["exit_code"] != 0
+        assert len(result["suites"]) == 1
+    if mode != "budget":
+        assert timeouts[1] == 1700
+
+
+@pytest.mark.parametrize("failure", ["diff", "metadata"])
+def test_suite_discovery_failure_falls_back(tmp_path, monkeypatch, failure):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    root = tmp_path / "worktrees/discovery"
+    root.mkdir(parents=True)
+    (root / "Cargo.toml").write_text("")
+    monkeypatch.setattr(acts.shutil, "which", lambda n: n)
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "git":
+            return (1, "", "git failed") if failure == "diff" else (0, "src/lib.rs", "")
+        if cmd[:2] == ["cargo", "metadata"]:
+            return 1, "", "metadata failed"
+        return 0, "2 passed", ""
+
+    monkeypatch.setattr(acts, "_run", run)
+    result = acts.run_suite({"run_id": "discovery", "base_sha": "base"})
+    assert result["suite_scope"] == "full"
+    assert failure in result["fallback_reason"]
+    assert result["ok"] is True
