@@ -680,7 +680,7 @@ def map_ci_findings(payload: dict) -> dict:
         }
     identity = {
         key: payload[key]
-        for key in ("pr", "sha", "run_id", "repo", "check_runs_url")
+        for key in ("pr", "sha", "run_id", "code_repo", "check_runs_url")
         if key in payload
     }
     findings = []
@@ -796,13 +796,17 @@ def mark_pending(kind: str, payload: dict) -> Path:
 
 
 def rehydrated(stored: dict, observed: dict) -> dict:
-    """Stored identity fills the gaps; observed facts win. Pure.
+    """Stored identity fills the gaps; observed facts win except for repo. Pure.
 
     Observed wins because the marker describes what we asked for and the event
     describes what happened — a suite's `sha` is the commit actually tested, which
-    is the truer value even when the marker holds an earlier one.
+    is the truer value even when the marker holds an earlier one. The webhook
+    knows the code repo, never the issue's repo, so a stored repo must survive.
     """
-    return {**stored, **observed}
+    merged = {**stored, **observed}
+    if "repo" in stored:
+        merged["repo"] = stored["repo"]
+    return merged
 
 
 class PendingMissing(RuntimeError):

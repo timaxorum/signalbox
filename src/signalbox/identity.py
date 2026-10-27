@@ -18,7 +18,12 @@ from typing import NamedTuple
 # Keys that are the system's to assign, in the order they read naturally.
 CARRIED_KEYS: tuple[str, ...] = (
     "run_id",
+    # Issue #434: the issue repo (owner/name), set at launch and used only by
+    # fetch-issue and close-issue. A CI report must never write it.
     "repo",
+    # Issue #434: the PR and CI repo, observed from the check_suite webhook.
+    # It may differ from the issue repo.
+    "code_repo",
     "issue",
     # Issue #80: every PR opened as "signalbox (#N)" because the issue title
     # died at the plan splitter.

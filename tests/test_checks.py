@@ -106,7 +106,7 @@ def test_a_detail_fetch_that_fails_is_data_not_an_exception(
 
 def test_failed_detail_still_maps_to_a_ci_round_with_run_identity(monkeypatch):
     identity = {
-        "pr": 57, "sha": "abc123", "run_id": "sb-101", "repo": "acme/widget",
+        "pr": 57, "sha": "abc123", "run_id": "sb-101", "code_repo": "acme/widget",
         "check_runs_url": "https://api/x",
     }
     monkeypatch.setattr(acts, "_run", lambda *a, **k: (1, "", "fetch denied"))
@@ -153,6 +153,77 @@ def test_observed_facts_win_over_the_stored_marker():
     assert merged["sha"] == "new", "the suite describes the commit actually tested"
     assert merged["issue"] == 56, "the webhook cannot know this"
     assert merged["conclusion"] == "success"
+
+
+def test_a_suite_report_cannot_replace_the_issue_repo():
+    from signalbox.identity import CARRIED_KEYS
+
+    stored = {
+        "run_id": "sb-12", "repo": "AxorumHQ/internal", "issue": 12, "pr": 7,
+    }
+    observed = {
+        "run_id": "sb-12", "repo": "AxorumHQ/axorum",
+        "code_repo": "AxorumHQ/axorum", "pr": 7, "sha": "new",
+    }
+
+    merged = acts.rehydrated(stored, observed)
+
+    assert merged["repo"] == "AxorumHQ/internal"
+    assert merged["code_repo"] == "AxorumHQ/axorum"
+    assert merged["sha"] == "new"
+    assert "code_repo" in CARRIED_KEYS
+
+
+def test_close_issue_after_a_suite_targets_the_issue_repo(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    stored = {
+        "run_id": "sb-12", "repo": "AxorumHQ/internal", "issue": 12, "pr": 7,
+    }
+    acts.mark_pending("pr", stored)
+    observed = {
+        "pr": 7,
+        "run_id": "sb-12",
+        "code_repo": "AxorumHQ/axorum",
+        "sha": "new",
+        "check_runs_url": "https://api.github.com/repos/AxorumHQ/axorum/check-runs",
+        "conclusion": "success",
+    }
+    payload = acts.rehydrate("pr", observed)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return 0, '{"state":"CLOSED"}', ""
+
+    monkeypatch.setattr(acts, "_run", fake_run)
+
+    result = acts.close_issue(payload)
+
+    assert result["ok"] is True
+    assert len(calls) == 2
+    assert calls[0][:4] == ["gh", "issue", "close", "12"]
+    assert calls[1][:4] == ["gh", "issue", "view", "12"]
+    for cmd in calls:
+        index = cmd.index("--repo")
+        assert cmd[index:index + 2] == ["--repo", "AxorumHQ/internal"]
+        assert "AxorumHQ/axorum" not in " ".join(cmd)
+
+
+def test_ci_findings_point_at_the_code_repo():
+    result = acts.map_ci_findings({
+        "run_id": "sb-12",
+        "repo": "AxorumHQ/internal",
+        "code_repo": "AxorumHQ/axorum",
+        "pr": 7,
+        "failed": [{"name": "tests"}],
+        "stages": [{"shards": [{"files": ["src/fix.py"]}]}],
+    })
+
+    assert result["ok"] is True
+    assert result["findings"]
+    for finding in result["findings"]:
+        assert finding["code_repo"] == "AxorumHQ/axorum"
+        assert "repo" not in finding
 
 
 def test_rehydrate_restores_run_identity_and_refreshes_the_marker(tmp_path, monkeypatch):
