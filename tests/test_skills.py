@@ -126,6 +126,25 @@ def test_assess_skill_matches_the_suite_outcome_contract():
         assert evidence_field in body
 
 
+def test_assess_skill_reports_suite_scope_without_changing_decision_rules():
+    body = (SKILLS / "signalbox-assess" / "SKILL.md").read_text()
+    prose = " ".join(body.split())
+
+    for evidence_field in (
+        "`suites`",
+        "`suite_scope`",
+        "`root`",
+        "`fallback_reason`",
+        "`changed_paths_unmapped`",
+    ):
+        assert evidence_field in body
+    assert "report each entry's `root`, `command`, `exit_code`, `passed`, and `failed`" in prose
+    assert "state whether the run was `diff` or `full`" in prose
+    assert "CI runs the full suite before merge" in prose
+    assert "`suite_scope: diff` alone is not grounds for `needs_human`" in prose
+    assert "`ran: false` still means `needs_human`" in prose
+
+
 def test_remediate_skill_names_only_the_wired_resume_topic():
     """A documented resume point must have a topology handler that consumes it."""
     body = (SKILLS / "signalbox-remediate" / "SKILL.md").read_text()
