@@ -18,15 +18,22 @@ point, not the record.
 `gh` and it is authenticated:
 
 ```
-gh issue view <number> --comments
+gh issue view <number> --repo <repo> --comments
 ```
+
+`<number>` is the payload's `issue` and `<repo>` is the payload's `repo`; the
+issue may live in a different repo from the code you are in, so never drop
+`--repo`. If the payload has no `repo`, the run has no GitHub issue and the
+payload's `body` is the whole record.
 
 The thread is the only channel a human has for handing you knowledge that is not
 in this repository — a schema from another repo, a decision already taken, an
 investigation someone ran before launching you. Follow what it references, too:
 a `see #59`, a linked PR, a commit. `gh issue view`, `gh pr view`, and
 `gh pr diff` all work, and a reference someone bothered to write down is usually
-the reference that matters.
+the reference that matters. A bare `#N` in the thread is in the issue's repo,
+so follow it with `--repo <repo>`, while a reference written as `owner/name#N`
+names its own repo.
 
 This is why the payload does not pre-digest it for you. Any fixed set of fields
 is a guess about what this issue needs, and the guess is wrong often enough to

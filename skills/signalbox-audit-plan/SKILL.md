@@ -80,8 +80,13 @@ on it.
 Check the issue thread before objecting on those grounds — you have `gh`:
 
 ```
-gh issue view <number> --comments
+gh issue view <number> --repo <repo> --comments
 ```
+
+`<number>` is the payload's `issue` and `<repo>` is the payload's `repo`; the
+issue may live in a different repo from the code you are in, so never drop
+`--repo`. If the payload has no `repo`, the run has no GitHub issue and the
+payload's `body` is the whole record.
 
 A shard intent citing a fact from the thread is citing a real source. Object if
 the fact is *wrong*, if the plan never says where it came from, or if the shard

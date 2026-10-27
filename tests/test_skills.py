@@ -51,6 +51,18 @@ def test_every_role_and_dispatch_names_a_distinct_skill():
     assert len(ALL_SKILLS) == 10, ALL_SKILLS
 
 
+def test_issue_reading_skills_name_the_issue_repo():
+    """The agent's cwd is the code repo, and the issue's repo comes only from the payload."""
+    readers = set()
+    for path in SKILLS.glob("*/SKILL.md"):
+        for line in path.read_text().splitlines():
+            if line.strip().startswith("gh issue view"):
+                assert "--repo <repo>" in line, f"{path.parent.name}: {line}"
+                readers.add(path.parent.name)
+    for skill in ("signalbox-plan", "signalbox-audit-plan"):
+        assert skill in readers, f"{skill} never reads the issue thread"
+
+
 def test_the_planners_subagent_skills_exist_though_no_role_names_them():
     """Survey and recall stopped being roles without stopping being procedures.
 
