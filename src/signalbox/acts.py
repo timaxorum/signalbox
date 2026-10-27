@@ -438,6 +438,18 @@ def push_branch(payload: dict) -> dict:
     return {**payload, "ok": True, "branch": branch, "sha": sha}
 
 
+def closing_reference(payload: dict) -> str:
+    """Use the full issue reference whenever the run names its repository.
+
+    `Closes owner/repo#N` is valid GitHub syntax whether or not the PR is in
+    the same repo, and the code repo's name is not known when open_pr runs
+    (AxorumHQ/internal#434).
+    """
+    issue = payload.get("issue")
+    repo = payload.get("repo")
+    return f"{repo}#{issue}" if isinstance(repo, str) and repo != "" else f"#{issue}"
+
+
 def open_pr(payload: dict) -> dict:
     """Open the PR against the base the run was actually pinned to.
 
@@ -457,7 +469,7 @@ def open_pr(payload: dict) -> dict:
         "--base", str(base_branch),
         "--head", branch_for(payload),
         "--title", f"{payload.get('title') or 'signalbox'} (#{payload.get('issue')})",
-        "--body", f"Closes #{payload.get('issue')}\n\nOpened by signalbox run `{payload.get('run_id')}`.",
+        "--body", f"Closes {closing_reference(payload)}\n\nOpened by signalbox run `{payload.get('run_id')}`.",
     ]
     code, out, err = _run(cmd, cwd=root, timeout=60)
     candidate = out.rstrip("/").rsplit("/", 1)[-1] if out else ""

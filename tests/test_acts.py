@@ -10,6 +10,7 @@ import pytest
 from signalbox.acts import (
     approve,
     close_issue,
+    closing_reference,
     commit_fix,
     clear_pending,
     clear_session,
@@ -557,6 +558,40 @@ def test_open_pr_keeps_the_issue_closing_trailer(tmp_path, monkeypatch):
 
     assert result["ok"] is True
     assert calls[0][calls[0].index("--body") + 1].startswith("Closes #67\n")
+
+
+def test_open_pr_closes_the_issue_by_full_reference_when_the_run_names_its_repo(tmp_path, monkeypatch):
+    from signalbox import acts
+
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    calls = []
+    responses = iter([
+        (0, "https://github.test/acme/widget/pull/67", ""),
+        (
+            0,
+            '{"number":67,"url":"https://github.test/acme/widget/pull/67",'
+            '"baseRefName":"main","headRefName":"signalbox/run-sb-67","state":"OPEN"}',
+            "",
+        ),
+    ])
+    monkeypatch.setattr(
+        acts, "_run",
+        lambda cmd, cwd=None, timeout=120: calls.append(cmd) or next(responses),
+    )
+
+    result = acts.open_pr(
+        {"run_id": "sb-67", "issue": 67, "base_branch": "main", "title": "Close it",
+         "repo": "AxorumHQ/internal"}
+    )
+
+    assert result["ok"] is True
+    assert calls[0][calls[0].index("--body") + 1].startswith("Closes AxorumHQ/internal#67\n")
+
+
+def test_closing_reference_falls_back_to_a_bare_number_without_a_repo():
+    assert closing_reference({"issue": 5}) == "#5"
+    assert closing_reference({"issue": 5, "repo": None}) == "#5"
+    assert closing_reference({"issue": 5, "repo": "a/b"}) == "a/b#5"
 
 
 def test_ci_failure_becomes_review_findings():
