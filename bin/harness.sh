@@ -761,6 +761,7 @@ launch() {
   local no_forwarder=0
   local repo=""
   local repo_path="$PWD"
+  local repo_path_given=0
   local previous=""
   local arg
   local -a launch_args=()
@@ -778,13 +779,14 @@ launch() {
     fi
     if [[ "$previous" == "--repo-path" ]]; then
       repo_path="$arg"
+      repo_path_given=1
       previous=""
       continue
     fi
     case "$arg" in
       --repo=*) repo="${arg#--repo=}" ;;
       --repo) previous="--repo" ;;
-      --repo-path=*) repo_path="${arg#--repo-path=}" ;;
+      --repo-path=*) repo_path="${arg#--repo-path=}"; repo_path_given=1 ;;
       --repo-path) previous="--repo-path" ;;
     esac
   done
@@ -792,10 +794,17 @@ launch() {
   repo_root="$(git -C "$repo_path" rev-parse --show-toplevel 2>/dev/null || true)"
   local exact_repo_path=""
   exact_repo_path="$(cd "$repo_path" 2>/dev/null && pwd -P || true)"
-  if [[ -n "$repo" ]]; then
+  # #435: --repo names the issue's repo; --repo-path names the code repo
+  if [[ "$repo_path_given" == 1 && "$repo_root" == "$exact_repo_path" ]] \
+    && git -C "$repo_root" remote get-url origin >/dev/null 2>&1; then
+    if find "$repo_root/.github/workflows" -maxdepth 1 -type f \
+      \( -name '*.yml' -o -name '*.yaml' \) -print -quit 2>/dev/null \
+      | grep -q .; then
+      promote_capable=1
+    fi
+  elif [[ -n "$repo" ]]; then
     local workflow_count=""
-    # #105: an explicit remote is the launch target when both target forms are
-    # present. An unavailable API leaves workflow state unknown, which cannot
+    # #105: an unavailable API leaves workflow state unknown, which cannot
     # escalate the missing-forwarder warning into a refusal.
     workflow_count="$(gh api "repos/$repo/actions/workflows" \
       --jq '.total_count // 0' 2>/dev/null || true)"

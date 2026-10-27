@@ -1482,6 +1482,57 @@ def _launch_with_remote_workflow_count(
     return result, forwarded_args.read_text() if forwarded_args.exists() else ""
 
 
+def _launch_with_code_checkout(
+    tmp_path: Path, workflow_count: int, *, has_workflow: bool
+) -> subprocess.CompletedProcess[str]:
+    code = tmp_path / "code"
+    code.mkdir()
+    subprocess.run(["git", "init", str(code)], check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(code),
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/o/code.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    if has_workflow:
+        workflows = code / ".github" / "workflows"
+        workflows.mkdir(parents=True)
+        (workflows / "ci.yml").write_text("name: ci\n")
+    result, _ = _launch_with_remote_workflow_count(
+        tmp_path, workflow_count, "--repo-path", str(code)
+    )
+    return result
+
+
+def test_repo_path_with_workflow_refuses_even_when_the_issue_repo_has_none(
+    tmp_path: Path,
+):
+    """#435: the code checkout's workflow requires webhook forwarding."""
+    result = _launch_with_code_checkout(tmp_path, 0, has_workflow=True)
+
+    assert result.returncode == 1
+    assert "forwarder decision: refuse (resolvable promote path; no forwarder)" in (
+        result.stdout
+    )
+
+
+def test_repo_path_without_workflow_warns_even_when_the_issue_repo_has_some(
+    tmp_path: Path,
+):
+    """#435: the issue repo's workflows do not make the code promotable."""
+    result = _launch_with_code_checkout(tmp_path, 1, has_workflow=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "forwarder decision: warn" in result.stdout
+
+
 def test_remote_without_workflow_launches_with_forwarder_warning(tmp_path: Path):
     """#105: a remote alone is not a resolvable promote path."""
     result, forwarded_args = _launch_with_remote_workflow_count(tmp_path, 0)
