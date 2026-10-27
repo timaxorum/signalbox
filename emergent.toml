@@ -144,7 +144,9 @@ subscribes = ["http.request"]
 publishes = ["control.unknown-event"]
 
 # GitHub's push notification for a concluded check suite, turned into the
-# vocabulary the promote path already speaks.
+# vocabulary the promote path already speaks. The webhook observes code_repo,
+# never the issue repo: keeping them separate prevents CI from retargeting
+# close-issue when the issue and code live in different repositories (#434).
 #
 # Two conclusions are dropped rather than routed. `cancelled` and `stale` mean
 # superseded, which the workflow's own cancel-in-progress produces on every
@@ -165,7 +167,7 @@ args = ["-s", "http.request", "--publish-as", "checks.observed", "--",
         | select((.pull_requests | length) > 0)
         | {pr: .pull_requests[0].number,
            run_id: (.head_branch | ltrimstr("signalbox/run-")),
-           repo: $repo,
+           code_repo: $repo,
            sha: .head_sha,
            check_runs_url: .check_runs_url,
            conclusion: (if ((.conclusion // "") | ascii_upcase)
@@ -487,7 +489,9 @@ publishes = ["stage.opened"]
 # replay the #59 crash: the last durable stage.merged must remain sufficient to
 # advance or exhaust its own run after a restart. The cursor contains raw plan
 # stages, so advance re-stamps the selected item with run identity and its new
-# cursor rather than emitting that raw item as an orphan.
+# cursor rather than emitting that raw item as an orphan. Carry code_repo too
+# so advancing preserves the observed code repository alongside the issue repo
+# when they differ (#434).
 [[handlers]]
 name = "guard-stages-advance"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
@@ -497,7 +501,7 @@ args = ["-s", "stage.merged", "--publish-as", "stage.opened", "--",
         | (.stage_index + 1) as $index
         | select($index < .stage_count)
         | $event.stages[$index]
-          + ($event | {run_id, repo, issue, title, base_sha, base_branch, attempt}
+          + ($event | {run_id, repo, code_repo, issue, title, base_sha, base_branch, attempt}
                     | with_entries(select(.value != null)))
           + {stage_index: $index, stage_count: $event.stage_count, stages: $event.stages}''']
 subscribes = ["stage.merged"]

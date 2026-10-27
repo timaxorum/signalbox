@@ -1745,6 +1745,26 @@ def test_stage_merge_advances_from_the_event_carried_index():
     assert route("guard-stages-exhaust", merged) is None
 
 
+def test_stage_advance_carries_the_code_repo():
+    merged = {
+        "run_id": "sb-434",
+        "repo": "AxorumHQ/internal",
+        "code_repo": "AxorumHQ/axorum",
+        "stage_index": 0,
+        "stage_count": 2,
+        "stages": [
+            {"stage_id": "s1", "shards": []},
+            {"stage_id": "s2", "shards": []},
+        ],
+    }
+    opened = route("guard-stages-advance", merged)
+    assert opened is not None
+    assert opened["stage_id"] == "s2"
+    assert opened["stage_index"] == 1
+    assert opened["repo"] == "AxorumHQ/internal"
+    assert opened["code_repo"] == "AxorumHQ/axorum"
+
+
 def test_replayed_last_stage_merge_exhausts_with_identity():
     merged = checked_stage_plan()["stages"][2]
     assert route("guard-stages-advance", merged) is None
@@ -1812,7 +1832,8 @@ def test_a_concluded_suite_becomes_a_promote_signal(conclusion, expected):
     assert routed["conclusion"] == expected
     assert routed["pr"] == 57
     assert routed["run_id"] == "sb-56", "run identity comes from the branch name"
-    assert routed["repo"] == "rrrodzilla/signalbox"
+    assert routed["code_repo"] == "rrrodzilla/signalbox"
+    assert "repo" not in routed
 
 
 def test_checks_passed_carries_string_run_identity_to_notes_planning():

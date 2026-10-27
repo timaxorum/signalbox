@@ -208,6 +208,8 @@ def test_every_carried_scalar_survives_the_agent_environment_seam():
     # not cross a shard agent seam. Every other carried key is scalar identity
     # and must be named by both hand-written scalar maps.
     non_scalar_agent_keys = {
+        # An agent's emission may drop code_repo; every later suite observes it again.
+        "code_repo",
         "attempt",
         "stages",
         "declared",
