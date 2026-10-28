@@ -19,6 +19,7 @@ ACT_COMMANDS = frozenset({
     "merge-stage", "commit-fix", "push-branch", "verify-signatures",
     "open-pr", "merge-pr", "close-issue", "check-details", "map-ci-findings", "reap",
     "mark-pending", "clear-pending", "rehydrate", "notify", "launch", "approve",
+    "catch-up-checks",
 })
 
 COMMANDS = ACT_COMMANDS | {

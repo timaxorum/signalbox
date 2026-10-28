@@ -1530,3 +1530,79 @@ def test_diff_detected_marker_without_runner_still_errors(tmp_path, monkeypatch)
     assert result["errored"] is True
     assert result["reason"] == "suite detected but no runner available (pyproject.toml)"
     assert len(calls) == 1
+
+
+def test_catch_up_delivers_only_undelivered_completed_suites(tmp_path, monkeypatch, capsys):
+    from signalbox import acts, emit
+
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    marker = tmp_path / "pending" / "pr-7.json"
+    marker.parent.mkdir()
+    marker.write_text(json.dumps({
+        "pr": 7, "run_id": "454-1", "url": "https://github.com/a/one/pull/7",
+        "delivered_suites": [1],
+    }))
+    acts.mark_pending("pr", {"pr": 8, "code_repo": "b/two"})
+    suites = [{"id": 1, "status": "completed"},
+              {"id": 2, "status": "completed"},
+              {"id": 3, "status": "in_progress"}]
+    commands = []
+
+    def run(cmd):
+        commands.append(cmd)
+        body = ({"headRefOid": "abc", "headRefName": "signalbox/454-1"}
+                if cmd[1] == "pr" else {"check_suites": suites})
+        return 0, json.dumps(body), ""
+
+    monkeypatch.setattr(acts, "_run", run)
+    posted = []
+    monkeypatch.setattr(emit, "post", lambda body, **kwargs: posted.append((body, kwargs)) or 202)
+    acts.catch_up_checks("a/one")
+    assert commands == [
+        ["gh", "pr", "view", "7", "--repo", "a/one", "--json", "headRefOid,headRefName"],
+        ["gh", "api", "repos/a/one/commits/abc/check-suites"],
+    ]
+    assert posted == [({"action": "completed", "repository": {"full_name": "a/one"},
+                        "check_suite": suites[1]},
+                       {"url": "http://127.0.0.1:8104/github",
+                        "headers": {"X-GitHub-Event": "check_suite"}})]
+    assert [json.loads(line)["suite_id"] for line in capsys.readouterr().out.splitlines()] == [2]
+
+
+def test_rehydrate_records_the_delivered_suite(tmp_path, monkeypatch):
+    from signalbox import acts
+
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    marker = acts.mark_pending("pr", {"pr": 7, "code_repo": "a/one", "delivered_suites": [1]})
+    payload = {"pr": 7, "code_repo": "a/one", "suite_id": 2}
+    for _ in range(2):
+        result = acts.rehydrate("pr", payload)
+        assert result == payload
+        assert "delivered_suites" not in result
+    assert json.loads(marker.read_text())["delivered_suites"] == [1, 2]
+
+
+@pytest.mark.parametrize("failure", ["gh", "port"])
+def test_catch_up_reports_unreachable_services(tmp_path, monkeypatch, capsys, failure):
+    from signalbox import acts, emit
+    from urllib.error import URLError
+
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    acts.mark_pending("pr", {"pr": 7, "code_repo": "a/one"})
+
+    def run(cmd):
+        if failure == "gh":
+            raise FileNotFoundError("gh unavailable")
+        body = ({"headRefOid": "abc"} if cmd[1] == "pr" else
+                {"check_suites": [{"id": 2, "status": "completed"}]})
+        return 0, json.dumps(body), ""
+
+    def post(*args, **kwargs):
+        raise URLError("port unavailable")
+
+    monkeypatch.setattr(acts, "_run", run)
+    monkeypatch.setattr(emit, "post", post)
+    acts.catch_up_checks("a/one")
+    result = json.loads(capsys.readouterr().out)
+    assert result["ok"] is False
+    assert "unavailable" in result["error"]
