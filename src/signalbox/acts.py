@@ -93,11 +93,12 @@ def _install_dependencies(root: Path) -> list[dict]:
 
 
 def prepare_workspace(payload: dict) -> dict:
-    """One worktree per run, branched from the base sha the launch pinned.
+    """One worktree per run, pinned to the remote tip at prepare time.
 
     Pinning matters: the base branch moves while a run is in flight, so a run
     that re-read it at merge time would land against a tree it never saw. The
-    sha resolved here is the one every later act uses.
+    sha resolved here is the one every later act uses. Without an origin remote,
+    the local base branch supplies the pin.
     """
     root = worktree_for(payload)
     branch = branch_for(payload)
@@ -141,11 +142,39 @@ def prepare_workspace(payload: dict) -> dict:
                 "deps": _install_dependencies(root)}
 
     base_sha = payload.get("base_sha")
+    diagnostics = {}
     if not base_sha:
-        code, base_sha, err = _run(["git", "rev-parse", str(base_branch)], cwd=source)
-        if code != 0:
-            return {**payload, "ok": False, "error": err or "cannot resolve base"}
-    resolved = {"base_branch": base_branch, "base_sha": base_sha}
+        # #466: run 454 started from local main, three commits behind
+        # origin/main. Fetch the named branch so the plan sees the remote tip.
+        code, _, _ = _run(["git", "remote", "get-url", "origin"], cwd=source)
+        if code == 0:
+            base_ref = f"origin/{base_branch}"
+            code, _, err = _run(
+                ["git", "fetch", "--no-tags", "origin",
+                 f"+refs/heads/{base_branch}:refs/remotes/origin/{base_branch}"],
+                cwd=source,
+            )
+            if code != 0:
+                return {**payload, "ok": False,
+                        "error": f"cannot fetch {base_ref}: {err or 'git fetch failed'}"}
+            code, base_sha, err = _run(
+                ["git", "rev-parse", "--verify", f"{base_ref}^{{commit}}"], cwd=source,
+            )
+            if code != 0 or not base_sha:
+                return {**payload, "ok": False,
+                        "error": f"cannot fetch {base_ref}: {err or 'cannot resolve fetched commit'}"}
+            code, local_sha, _ = _run(
+                ["git", "rev-parse", "--verify", f"{base_branch}^{{commit}}"], cwd=source,
+            )
+            if code == 0 and local_sha != base_sha:
+                diagnostics["local_base_sha"] = local_sha
+        else:
+            base_ref = str(base_branch)
+            code, base_sha, err = _run(["git", "rev-parse", str(base_branch)], cwd=source)
+            if code != 0:
+                return {**payload, "ok": False, "error": err or "cannot resolve base"}
+        diagnostics["base_ref"] = base_ref
+    resolved = {"base_branch": base_branch, "base_sha": base_sha, **diagnostics}
 
     # Preflight and the engine may have different environments. When startup
     # forwarded a vault, re-resolve it here so #70 cannot launch a run against
