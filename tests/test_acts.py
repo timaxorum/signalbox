@@ -928,7 +928,7 @@ def test_run_suite_holds_and_releases_the_global_lock(tmp_path, monkeypatch, out
     lock_path = tmp_path / "locks" / "suite.lock"
     invoked = []
 
-    def fake_run(cmd, cwd=None, timeout=120):
+    def fake_run(cmd, cwd=None, timeout=120, *, env=None):
         invoked.append((cmd, cwd, timeout))
         with lock_path.open("a") as contender:
             with pytest.raises(BlockingIOError):
@@ -1190,7 +1190,7 @@ def test_suite_diff_selection(tmp_path, monkeypatch, change, scope):
     monkeypatch.setattr(acts.shutil, "which", lambda name: "/bin/" + name)
     calls = []
 
-    def run(cmd, cwd=None, timeout=120):
+    def run(cmd, cwd=None, timeout=120, *, env=None):
         calls.append((cmd, cwd))
         if cmd[:2] == ["git", "diff"]:
             assert cmd[-1] == "rebased..HEAD"
@@ -1230,7 +1230,7 @@ def test_cargo_diff_includes_reverse_workspace_dependencies(tmp_path, monkeypatc
     monkeypatch.setattr(acts.shutil, "which", lambda n: None if n == "cargo-nextest" and not nextest else n)
     calls = []
 
-    def run(cmd, cwd=None, timeout=120):
+    def run(cmd, cwd=None, timeout=120, *, env=None):
         calls.append((cmd, cwd))
         if cmd[:2] == ["git", "diff"]:
             return 0, "a/Cargo.toml\na/src/lib.rs", ""
@@ -1277,7 +1277,7 @@ def test_multiple_diff_suites_share_budget_and_report_results(tmp_path, monkeypa
     monkeypatch.setattr(acts.time, "monotonic", lambda: elapsed[0])
     timeouts = []
 
-    def run(cmd, cwd=None, timeout=120):
+    def run(cmd, cwd=None, timeout=120, *, env=None):
         if cmd[0] == "git":
             return 0, "one/a.py\ntwo/b.py", ""
         timeouts.append(timeout)
@@ -1352,7 +1352,7 @@ def test_mapped_and_unmapped_changes_keep_selected_suites(tmp_path, monkeypatch,
     monkeypatch.setattr(acts.shutil, "which", lambda name: name)
     calls = []
 
-    def run(cmd, cwd=None, timeout=120):
+    def run(cmd, cwd=None, timeout=120, *, env=None):
         if cmd[:2] == ["git", "diff"]:
             return 0, "client/index.ts\ndocs/readme.md", ""
         calls.append((cmd, cwd))
@@ -1392,7 +1392,7 @@ def test_diff_fallback_without_root_runner(tmp_path, monkeypatch, change, code, 
     root.mkdir(parents=True)
     calls = []
 
-    def run(cmd, cwd=None, timeout=120):
+    def run(cmd, cwd=None, timeout=120, *, env=None):
         calls.append(cmd)
         assert cmd[:2] == ["git", "diff"]
         return code, change, "git failed" if code else ""
@@ -1425,7 +1425,7 @@ def test_unmapped_changes_run_root_suite_once(tmp_path, monkeypatch, mapped):
         "resolve": {"nodes": [{"id": "root", "dependencies": []}]}}
     calls = []
 
-    def run(cmd, cwd=None, timeout=120):
+    def run(cmd, cwd=None, timeout=120, *, env=None):
         if cmd[:2] == ["git", "diff"]:
             return 0, "member/src/lib.rs\ndocs/readme.md" if mapped else "docs/readme.md", ""
         if cmd[:2] == ["cargo", "metadata"]:
@@ -1456,7 +1456,7 @@ def test_mapped_suite_runs_with_untested_paths_for_approval(tmp_path, monkeypatc
     unmapped = [f"docs/{i:02}.md" for i in reversed(range(unmapped_count))]
     calls = []
 
-    def run(cmd, cwd=None, timeout=120):
+    def run(cmd, cwd=None, timeout=120, *, env=None):
         if cmd[:2] == ["git", "diff"]:
             return 0, "\n".join(["pkg/code.py", *unmapped]), ""
         calls.append((cmd, cwd))
@@ -1495,7 +1495,7 @@ def test_ci_file_change_runs_changed_package_suites_only(tmp_path, monkeypatch, 
     monkeypatch.setattr(acts.shutil, "which", lambda name: name)
     calls = []
 
-    def run(cmd, cwd=None, timeout=120):
+    def run(cmd, cwd=None, timeout=120, *, env=None):
         if cmd[:2] == ["git", "diff"]:
             return 0, changed, ""
         calls.append((cmd, Path(cwd).relative_to(root).as_posix()))

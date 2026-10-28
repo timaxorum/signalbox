@@ -22,15 +22,19 @@ import sys
 import time
 from pathlib import Path
 
+from signalbox.toolchain import install_env, pnpm_argv, pnpm_packages
+
 from signalbox.paths import (
     WorktreeMissing, branch_for, install_skills, require_worktree, run_tmp_dir,
     sessions_dir, state_dir, vault_dir, worktree_for,
 )
 
 
-def _run(cmd: list[str], cwd: str | None = None, timeout: int = 120) -> tuple[int, str, str]:
+def _run(cmd: list[str], cwd: str | None = None, timeout: int = 120,
+         *, env: dict[str, str] | None = None) -> tuple[int, str, str]:
     completed = subprocess.run(
-        cmd, cwd=cwd, capture_output=True, text=True, check=False, timeout=timeout
+        cmd, cwd=cwd, capture_output=True, text=True, check=False, timeout=timeout,
+        **({"env": env} if env is not None else {}),
     )
     return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
 
@@ -66,6 +70,23 @@ def _enable_worktree_signing(root: Path) -> str | None:
         if code:
             return err or "cannot enable worktree commit signing"
     return None
+
+
+def _install_dependencies(root: Path) -> list[dict]:
+    deps = []
+    for directory in pnpm_packages(root):
+        try:
+            code, _, error = _run(
+                pnpm_argv(root) + ["install", "--frozen-lockfile", "--prod=false"],
+                cwd=str(directory), timeout=600, env=install_env(state_dir()),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            code, error = 1, str(exc)
+        entry = {"dir": str(directory), "ok": code == 0}
+        if code:
+            entry["error"] = error[-400:]
+        deps.append(entry)
+    return deps
 
 
 def prepare_workspace(payload: dict) -> dict:
@@ -113,7 +134,8 @@ def prepare_workspace(payload: dict) -> dict:
         if error:
             return {**payload, "ok": False, "error": error}
         install_skills(root)
-        return {**payload, **resolved, "ok": True, "worktree": str(root), "branch": branch}
+        return {**payload, **resolved, "ok": True, "worktree": str(root), "branch": branch,
+                "deps": _install_dependencies(root)}
 
     base_sha = payload.get("base_sha")
     if not base_sha:
@@ -143,7 +165,7 @@ def prepare_workspace(payload: dict) -> dict:
                 "error": err or "created worktree is not at the pinned base"}
     skills = install_skills(root)
     return {**payload, **resolved, "ok": True, "worktree": str(root), "branch": branch,
-            "skills": skills}
+            "skills": skills, "deps": _install_dependencies(root)}
 
 
 def source_repo(git_common_dir: str) -> Path:
@@ -262,6 +284,11 @@ SUITE_COMMANDS: tuple[tuple[str, tuple[list[str], ...]], ...] = (
 )
 
 
+def _suite_candidates(root: Path, marker: str):
+    for candidate in dict(SUITE_COMMANDS)[marker]:
+        yield pnpm_argv(root) + candidate[1:] if candidate[0] == "pnpm" else list(candidate)
+
+
 def suite_command(root: Path) -> list[str] | None:
     """The suite this repo actually has and a runner that can reach it, or None.
 
@@ -278,7 +305,7 @@ def suite_command(root: Path) -> list[str] | None:
     for marker, candidates in SUITE_COMMANDS:
         if not (root / marker).exists():
             continue
-        for cmd in candidates:
+        for cmd in _suite_candidates(root, marker):
             if shutil.which(cmd[0]):
                 return cmd
     return None
@@ -377,7 +404,7 @@ def _select_suites(root, paths, run):
         selected.setdefault((directory, marker), set()).update(packages)
     suites = []
     for (directory, marker), packages in selected.items():
-        cmd = next((list(c) for c in dict(SUITE_COMMANDS)[marker] if shutil.which(c[0])
+        cmd = next((list(c) for c in _suite_candidates(directory, marker) if shutil.which(c[0])
                     and (c[:2] != ["cargo", "nextest"] or shutil.which("cargo-nextest"))), None)
         if cmd:
             for package in sorted(packages):
@@ -447,7 +474,7 @@ def run_suite(payload: dict) -> dict:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("suite handler budget exhausted")
-        return _run(cmd, cwd=str(directory), timeout=remaining)
+        return _run(cmd, cwd=str(directory), timeout=remaining, env=install_env(state_dir()))
 
     try:
         root = require_worktree(payload)
