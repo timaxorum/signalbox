@@ -3,11 +3,12 @@
 import json
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from signalbox import acts
-from signalbox.toolchain import install_env, pnpm_argv, pnpm_packages, pnpm_version
+from signalbox.toolchain import install_env, install_only_env, pnpm_argv, pnpm_packages, pnpm_version
 
 
 def git(root, *args):
@@ -123,9 +124,10 @@ def test_prepare_workspace_installs_pinned_pnpm(tmp_path, monkeypatch, existing)
     assert len(calls) == 2
     for (cmd, kwargs), name in zip(calls, ("a", "z")):
         assert cmd == ["npx", "-y", "pnpm@10.31.0", "install",
-                       "--frozen-lockfile", "--prod=false"]
+                       "--frozen-lockfile", "--prod=false", "--ignore-scripts"]
         assert kwargs["cwd"] == str(root / name)
-        assert kwargs["timeout"] == 600
+        assert kwargs["timeout"] == 300
+        assert "GH_TOKEN" not in kwargs["env"]
         assert kwargs["env"]["CI"] == "true"
         assert kwargs["env"]["npm_config_store_dir"] == str(state / "pnpm-store")
 
@@ -167,3 +169,25 @@ def test_run_suite_uses_pinned_pnpm(tmp_path, monkeypatch, diff):
     assert kwargs["env"]["npm_config_store_dir"] == str(tmp_path / "pnpm-store")
     monkeypatch.setattr(acts.shutil, "which", lambda name: name if name == "npm" else None)
     assert acts.suite_command(directory) == ["npm", "test"]
+
+
+def test_install_env_carries_no_credentials(tmp_path, monkeypatch):
+    """#465 gate review: installs run outside the sandbox, so they see no secrets."""
+    for key in ("GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "CLOUDFLARE_API_TOKEN", "AWS_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(key, "secret")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = install_only_env(tmp_path)
+    assert set(env) <= {"PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "CI", "npm_config_yes",
+                        "npm_config_store_dir"}
+    assert env["PATH"] == "/usr/bin"
+    assert env["npm_config_store_dir"] == str(tmp_path / "pnpm-store")
+
+
+def test_prepare_budget_covers_the_installs():
+    """The handler's timeout in emergent.toml outlasts five installs at their own limit."""
+    import tomllib
+    from signalbox.toolchain import INSTALL_TIMEOUT
+    config = tomllib.loads((Path(__file__).parent.parent / "emergent.toml").read_text())
+    prepare = next(h for h in config["handlers"] if h["name"] == "prepare-workspace")
+    budget_ms = int(prepare["args"][prepare["args"].index("-t") + 1])
+    assert budget_ms >= 5 * INSTALL_TIMEOUT * 1000

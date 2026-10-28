@@ -282,7 +282,9 @@ for each tracked pnpm package (or once at the root of a pnpm workspace), using
 the exact pnpm version pinned in `package.json` or a pnpm/action-setup workflow
 step when available. Installs run outside the agent sandbox with a frozen
 lockfile, development dependencies, and a shared pnpm store under the state
-directory. Preparation and re-entry return a `deps` list of `{dir, ok}` results;
+directory. Because they run outside the sandbox, they run with `--ignore-scripts`
+and a minimal environment (`PATH`, `HOME`, locale, `TMPDIR`): no credentials
+reach a repository's install. Each install has 300 s; the handler, 30 minutes. Preparation and re-entry return a `deps` list of `{dir, ok}` results;
 failed installs include an `error` tail and leave workspace preparation successful.
 Repositories without pnpm lockfiles return `deps: []`.
 

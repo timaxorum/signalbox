@@ -22,7 +22,9 @@ import sys
 import time
 from pathlib import Path
 
-from signalbox.toolchain import install_env, pnpm_argv, pnpm_packages
+from signalbox.toolchain import (
+    INSTALL_ARGS, INSTALL_TIMEOUT, install_env, install_only_env, pnpm_argv, pnpm_packages,
+)
 
 from signalbox.paths import (
     WorktreeMissing, branch_for, install_skills, require_worktree, run_tmp_dir,
@@ -77,8 +79,8 @@ def _install_dependencies(root: Path) -> list[dict]:
     for directory in pnpm_packages(root):
         try:
             code, _, error = _run(
-                pnpm_argv(root) + ["install", "--frozen-lockfile", "--prod=false"],
-                cwd=str(directory), timeout=600, env=install_env(state_dir()),
+                pnpm_argv(root) + INSTALL_ARGS,
+                cwd=str(directory), timeout=INSTALL_TIMEOUT, env=install_only_env(state_dir()),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             code, error = 1, str(exc)
