@@ -18,11 +18,6 @@ ENGINE_PIDFILE="$LOG_DIR/engine.pid"
 ENGINE_OWNERSHIP_FILE="$LOG_DIR/engine.owner"
 DASHBOARD_LOG="$LOG_DIR/dashboard.log"
 DASHBOARD_PIDFILE="$LOG_DIR/dashboard.pid"
-FORWARD_LOG="$LOG_DIR/forward.log"
-FORWARD_PIDFILE="$LOG_DIR/forward.pid"
-FORWARD_CHILD_PIDFILE="$LOG_DIR/forward.child.pid"
-FORWARD_READYFILE="$LOG_DIR/forward.ready"
-FORWARD_OWNERSHIP_FILE="$LOG_DIR/forward.owner"
 FORWARD_SUPERVISED_CHILD=""
 
 CONTROL_PORT=8100
@@ -529,16 +524,25 @@ PY
   else
     say "viewer:    down"
   fi
-  local fpid
-  fpid="$(forward_pid || true)"
-  if [[ -n "$fpid" ]]; then
-    if [[ -f "$FORWARD_READYFILE" ]]; then
-      say "forwarder: up (pid $fpid, $(cat "$LOG_DIR/forward.repo" 2>/dev/null || echo unknown))"
+  # #468: report each repository independently, including retained down state.
+  local fpid state repo
+  local forwarder_found=0
+  for state in "$LOG_DIR"/forward/*; do
+    [[ -d "$state" ]] || continue
+    forwarder_found=1
+    repo="${state##*/}"
+    repo="${repo/__//}"
+    fpid="$(forward_pid "$state" || true)"
+    if [[ -n "$fpid" && -f "$state/ready" ]]; then
+      say "forwarder: up (pid $fpid, $repo)"
+    elif [[ -n "$fpid" ]]; then
+      say "forwarder: $repo FORWARDER FAILURE: supervisor up but tunnel is not connected — inspect retries with: tail -f $state/log"
     else
-      say "FORWARDER FAILURE: supervisor up but tunnel is not connected — inspect retries with: tail -f $FORWARD_LOG"
+      say "forwarder: $repo FORWARDER FAILURE: down — restore it with: $0 forward $repo"
     fi
-  else
-    say "FORWARDER FAILURE: down — restore it with: $0 forward <owner/name>"
+  done
+  if ((forwarder_found == 0)); then
+    say "forwarder: FORWARDER FAILURE: down — restore it with: $0 forward <owner/name>"
   fi
   for entry in "control:$CONTROL_PORT" "stream:$STREAM_PORT" \
                "topology:$TOPOLOGY_PORT" "dashboard:$DASHBOARD_PORT" \
@@ -566,31 +570,40 @@ PY
 # reaches outside the topology — and a dead tunnel is invisible to the engine by
 # construction, which is why `reap-prs` exists to give that silence a name.
 
+# #468: repository names map to isolated lifecycle state.
+forward_state() {
+  [[ "$1" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "invalid repository: $1"
+  printf '%s/forward/%s' "$LOG_DIR" "${1/\//__}"
+}
+
 forward_pid() {
-  [[ -f "$FORWARD_PIDFILE" ]] || return 1
+  local state="$1"
+  [[ -f "$state/pid" ]] || return 1
   local pid
-  pid="$(cat "$FORWARD_PIDFILE" 2>/dev/null)" || return 1
-  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null && printf '%s' "$pid"
+  pid="$(cat "$state/pid" 2>/dev/null)" || return 1
+  [[ -n "$pid" ]] && process_is_live "$pid" && printf '%s' "$pid"
 }
 
 forward_owns_hook() {
-  local pid="$1" rec_pid="" rec_start="" rec_dir=""
+  local state="$1" pid="$2" rec_pid="" rec_start="" rec_dir=""
   local current_start="" current_dir=""
   [[ -n "$pid" ]] || return 1
-  read -r rec_pid rec_start rec_dir 2>/dev/null <"$FORWARD_OWNERSHIP_FILE" || true
+  read -r rec_pid rec_start rec_dir 2>/dev/null <"$state/owner" || true
   current_start="$(process_start_time "$pid")"
-  current_dir="$(cd "$LOG_DIR" 2>/dev/null && pwd -P)" || true
+  current_dir="$(cd "$state" 2>/dev/null && pwd -P)" || true
   [[ -n "$rec_pid" && "$rec_pid" == "$pid" \
     && -n "$rec_start" && "$rec_start" == "$current_start" \
     && -n "$rec_dir" && "$rec_dir" == "$current_dir" ]]
 }
 
 forward_supervise() {
-  local repo="$1"
+  local repo="$1" state
+  state="$(forward_state "$repo")"
+  mkdir -p "$state"
   local backoff=1
   local stopping=0
   local repaired_stale_hook=0
-  local attempt_log="$LOG_DIR/forward.attempt.log"
+  local attempt_log="$state/attempt.log"
   FORWARD_SUPERVISED_CHILD=""
 
   stop_forward_child() {
@@ -603,7 +616,7 @@ forward_supervise() {
   trap stop_forward_child TERM INT EXIT
 
   while ((stopping == 0)); do
-    rm -f "$FORWARD_READYFILE"
+    rm -f "$state/ready"
     : >"$attempt_log"
     printf '[%s] starting webhook forwarder for %s\n' "$(date -Is)" "$repo"
     gh webhook forward \
@@ -612,23 +625,25 @@ forward_supervise() {
       --url="http://127.0.0.1:$GITHUB_PORT/github" \
       >"$attempt_log" 2>&1 &
     FORWARD_SUPERVISED_CHILD="$!"
-    printf '%s' "$FORWARD_SUPERVISED_CHILD" >"$FORWARD_CHILD_PIDFILE"
+    printf '%s' "$FORWARD_SUPERVISED_CHILD" >"$state/child.pid"
     sleep 1
     if kill -0 "$FORWARD_SUPERVISED_CHILD" 2>/dev/null; then
-      : >"$FORWARD_READYFILE"
+      : >"$state/ready"
       local supervisor_start="" supervisor_dir=""
       supervisor_start="$(process_start_time "$$")"
-      supervisor_dir="$(cd "$LOG_DIR" 2>/dev/null && pwd -P)" || true
+      supervisor_dir="$(cd "$state" 2>/dev/null && pwd -P)" || true
       if [[ -n "$supervisor_start" && -n "$supervisor_dir" ]]; then
         printf '%s %s %s\n' "$$" "$supervisor_start" "$supervisor_dir" \
-          >"$FORWARD_OWNERSHIP_FILE"
+          >"$state/owner"
       fi
       printf '[%s] webhook forwarder is running\n' "$(date -Is)"
+      # #468: recover CI completions missed before this tunnel connected.
+      signalbox catch-up-checks --repo "$repo" >>"$state/log" 2>&1 || true
     fi
     wait "$FORWARD_SUPERVISED_CHILD" 2>/dev/null || true
     FORWARD_SUPERVISED_CHILD=""
     cat "$attempt_log"
-    rm -f "$FORWARD_CHILD_PIDFILE" "$FORWARD_READYFILE"
+    rm -f "$state/child.pid" "$state/ready"
     ((stopping == 0)) || break
 
     if grep -Fq 'HTTP 422' "$attempt_log" \
@@ -636,7 +651,7 @@ forward_supervise() {
       if ((repaired_stale_hook == 0)); then
         repaired_stale_hook=1
         printf '[%s] stale webhook refused the forwarder; purging it and retrying once\n' "$(date -Is)"
-        forward_purge_hooks
+        forward_purge_hooks "$repo"
         continue
       fi
       printf '[%s] terminal webhook forwarder failure: stale hook remains after repair\n' "$(date -Is)"
@@ -658,8 +673,7 @@ forward_supervise() {
 }
 
 forward_purge_hooks() {
-  local repo=""
-  repo="$(cat "$LOG_DIR/forward.repo" 2>/dev/null || true)"
+  local repo="$1"
   [[ -n "$repo" ]] || return 0
 
   local hook_id
@@ -676,47 +690,49 @@ forward_purge_hooks() {
 
 forward_up() {
   local repo="${1:-$FORWARD_REPO}"
-  [[ -n "$repo" ]] || fail "usage: $0 forward <owner/name>"
+  [[ -n "$repo" ]] || fail "usage: $0 forward <owner/name> [owner/name ...]"
+  local state
+  state="$(forward_state "$repo")"
 
   gh extension list 2>/dev/null | grep -q 'cli/gh-webhook' \
     || fail "the webhook forwarder is not installed
   install it with: gh extension install cli/gh-webhook"
 
-  if [[ -n "$(forward_pid || true)" ]]; then
-    say "forwarder already running for $(cat "$LOG_DIR/forward.repo" 2>/dev/null || echo unknown) (pid $(forward_pid))"
+  if [[ -n "$(forward_pid "$state" || true)" ]]; then
+    say "forwarder already running for $repo (pid $(forward_pid "$state"))"
     return 0
   fi
 
-  mkdir -p "$LOG_DIR"
-  printf '%s' "$repo" >"$LOG_DIR/forward.repo"
-  rm -f "$FORWARD_READYFILE" "$FORWARD_OWNERSHIP_FILE"
-  : >"$FORWARD_LOG"
+  mkdir -p "$state"
+  rm -f "$state/ready" "$state/owner"
+  : >"$state/log"
   say "forwarding $repo check suites to http://127.0.0.1:$GITHUB_PORT/github"
-  nohup "$0" _forward-supervise "$repo" >"$FORWARD_LOG" 2>&1 &
-  printf '%s' "$!" >"$FORWARD_PIDFILE"
+  nohup "$0" _forward-supervise "$repo" >>"$state/log" 2>&1 &
+  printf '%s' "$!" >"$state/pid"
 
   local deadline=$((SECONDS + 3))
-  until [[ -f "$FORWARD_READYFILE" ]] \
-    || grep -q 'webhook forwarder exited' "$FORWARD_LOG" 2>/dev/null; do
+  until [[ -f "$state/ready" ]] \
+    || grep -q 'webhook forwarder exited' "$state/log" 2>/dev/null; do
     ((SECONDS < deadline)) || break
     sleep 0.1
   done
-  if [[ -z "$(forward_pid || true)" ]]; then
+  if [[ -z "$(forward_pid "$state" || true)" ]]; then
     say "  forwarder exited immediately:"
-    sed 's/^/    /' "$FORWARD_LOG" >&2
+    sed 's/^/    /' "$state/log" >&2
     fail "webhook forwarding did not start"
   fi
-  if [[ -f "$FORWARD_READYFILE" ]]; then
-    say "  forwarder up (pid $(forward_pid))"
+  if [[ -f "$state/ready" ]]; then
+    say "  forwarder up (pid $(forward_pid "$state"))"
   else
-    say "  forwarder supervisor up, but the tunnel has not connected; retrying with capped backoff (see $FORWARD_LOG)"
+    say "  forwarder supervisor up, but the tunnel has not connected; retrying with capped backoff (see $state/log)"
   fi
 }
 
-forward_down() {
-  local pid owns_hook=0 repo=""
-  pid="$(forward_pid || true)"
-  if forward_owns_hook "$pid"; then
+forward_down_one() {
+  local repo="$1" state="$2"
+  local pid owns_hook=0
+  pid="$(forward_pid "$state" || true)"
+  if forward_owns_hook "$state" "$pid"; then
     owns_hook=1
   fi
   if [[ -z "$pid" ]]; then
@@ -725,28 +741,54 @@ forward_down() {
     say "stopping forwarder: $pid"
     kill -TERM "$pid" 2>/dev/null || true
     local deadline=$((SECONDS + 10))
-    while kill -0 "$pid" 2>/dev/null; do
+    while process_is_live "$pid"; do
       ((SECONDS < deadline)) || { kill -9 "$pid" 2>/dev/null || true; break; }
       sleep 1
     done
   fi
   local child=""
-  [[ -f "$FORWARD_CHILD_PIDFILE" ]] && child="$(cat "$FORWARD_CHILD_PIDFILE" 2>/dev/null || true)"
+  [[ -f "$state/child.pid" ]] && child="$(cat "$state/child.pid" 2>/dev/null || true)"
   if [[ -n "$child" ]] && kill -0 "$child" 2>/dev/null; then
     kill -TERM "$child" 2>/dev/null || true
   fi
   if ((owns_hook)); then
     # A licensed 422 repair can replace this hook while its supervisor remains
     # live; that residual race is safer than every unrelated stop purging it.
-    forward_purge_hooks
+    forward_purge_hooks "$repo"
   else
-    repo="$(cat "$LOG_DIR/forward.repo" 2>/dev/null || true)"
     if [[ -n "$repo" ]]; then
       say "hook ownership not proven for $repo; a forwarder hook may remain; recover with: $0 forward $repo"
     fi
   fi
-  rm -f "$FORWARD_PIDFILE" "$FORWARD_CHILD_PIDFILE" "$FORWARD_READYFILE" \
-    "$FORWARD_OWNERSHIP_FILE"
+  rm -f "$state/pid" "$state/child.pid" "$state/ready" \
+    "$state/owner"
+}
+
+# #468: named stops are isolated; lifecycle teardown stops every repository.
+forward_down() {
+  local repo state
+  if (($#)); then
+    for repo in "$@"; do
+      state="$(forward_state "$repo")"
+      forward_down_one "$repo" "$state"
+    done
+  else
+    for state in "$LOG_DIR"/forward/*; do
+      [[ -d "$state" ]] || continue
+      repo="${state##*/}"
+      forward_down_one "${repo/__//}" "$state"
+    done
+  fi
+  # An older harness may have left its flat supervisor behind.
+  if [[ -f "$LOG_DIR/forward.pid" ]]; then
+    local legacy_pid legacy_child
+    legacy_pid="$(cat "$LOG_DIR/forward.pid" 2>/dev/null || true)"
+    legacy_child="$(cat "$LOG_DIR/forward.child.pid" 2>/dev/null || true)"
+    [[ -z "$legacy_pid" ]] || kill -TERM "$legacy_pid" 2>/dev/null || true
+    [[ -z "$legacy_child" ]] || kill -TERM "$legacy_child" 2>/dev/null || true
+    rm -f "$LOG_DIR/forward.pid" "$LOG_DIR/forward.child.pid" "$LOG_DIR/forward.ready" \
+      "$LOG_DIR/forward.owner" "$LOG_DIR/forward.repo"
+  fi
 }
 
 # ── launch ───────────────────────────────────────────────────────────────────
@@ -821,11 +863,28 @@ launch() {
       promote_capable=1
     fi
   fi
-  if [[ -z "$(forward_pid || true)" ]]; then
+  # #468: origin identifies the code repo; --repo is the fallback.
+  local code_repo="$repo" origin="" state=""
+  if [[ "$repo_root" == "$exact_repo_path" && -n "$repo_root" ]] \
+    && [[ "$repo_path_given" == 1 || -z "$repo" ]]; then
+    origin="$(git -C "$repo_root" remote get-url origin 2>/dev/null || true)"
+    if [[ "$origin" =~ github\.com[:/]([^/]+/[^/]+)/*$ ]]; then
+      code_repo="${BASH_REMATCH[1]}"
+      code_repo="${code_repo%.git}"
+    fi
+  fi
+  # #468: unresolved repo arguments retain the warning/override path.
+  if [[ "$code_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    state="$(forward_state "$code_repo")"
+  fi
+  if [[ -z "$state" || -z "$(forward_pid "$state" || true)" || ! -f "$state/ready" ]]; then
     if ((promote_capable && ! no_forwarder)); then
       # #105: expose the classifier result before refusal.
       say "forwarder decision: refuse (resolvable promote path; no forwarder)"
-      fail "webhook forwarder is down; restore it with: $0 forward <owner/name>"
+      if [[ -n "$code_repo" ]]; then
+        fail "webhook forwarder is down; restore it with: $0 forward $code_repo"
+      fi
+      fail "cannot identify GitHub code repository; pass --repo owner/name and run: $0 forward <owner/name>"
     fi
     # #105: no promote path or the explicit override takes the warning branch.
     say "forwarder decision: warn (promote path unresolved or --no-forwarder)"
@@ -847,8 +906,9 @@ dogfood() {
   # reaper. Start it here rather than making the operator remember.
   local origin
   origin="$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)"
-  if [[ "$origin" =~ github\.com[:/]([^/]+/[^/.]+) ]]; then
+  if [[ "$origin" =~ github\.com[:/]([^/]+/[^/]+)/*$ ]]; then
     local repo="${BASH_REMATCH[1]}"
+    repo="${repo%.git}"
     forward_up "$repo"
     launch "$issue" --repo "$repo" --repo-path "$ROOT" --run-id "sb-$issue" "$@"
   else
@@ -866,8 +926,8 @@ case "${1:-}" in
   status)    shift; status "$@" ;;
   launch)    shift; launch "$@" ;;
   dogfood)   shift; dogfood "$@" ;;
-  forward)   shift; forward_up "$@" ;;
-  unforward) shift; forward_down ;;
+  forward)   shift; if (($#)); then for repo in "$@"; do forward_up "$repo"; done; else forward_up; fi ;;
+  unforward) shift; forward_down "$@" ;;
   _forward-supervise) shift; forward_supervise "$@" ;;
   *)
     cat >&2 <<USAGE
@@ -883,8 +943,10 @@ usage: $0 <command>
   status     engine, forwarder, listening ports, and live run worktrees
   launch     signalbox launch <issue> [--no-forwarder] [...] against a running engine
   dogfood    launch against this checkout as run sb-<issue>
-  forward    tunnel a repo's check_suite deliveries to the github port
-  unforward  stop the tunnel
+  forward <owner/name> [owner/name ...]
+             tunnel each repo's check_suite deliveries to the github port
+  unforward [owner/name ...]
+             stop named tunnels, or all tunnels when omitted
 USAGE
     exit 64 ;;
 esac

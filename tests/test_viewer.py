@@ -1012,6 +1012,15 @@ def test_forwarder_pidfile_names_a_supervisor_that_respawns_and_stops(tmp_path: 
         "while true; do sleep 1; done\n"
     )
     gh.chmod(0o755)
+    catch_up = tmp_path / "catch-up"
+    signalbox = fake_bin / "signalbox"
+    signalbox.write_text(
+        "#!/usr/bin/env bash\n"
+        f"echo \"$*\" >> {catch_up}\n"
+        "echo catch-up-attempt\n"
+        "exit 1\n"
+    )
+    signalbox.chmod(0o755)
     log_dir = tmp_path / "logs"
     env = {
         **os.environ,
@@ -1026,10 +1035,10 @@ def test_forwarder_pidfile_names_a_supervisor_that_respawns_and_stops(tmp_path: 
         capture_output=True,
         text=True,
     )
-    supervisor = int((log_dir / "forward.pid").read_text())
-    child = int((log_dir / "forward.child.pid").read_text())
+    supervisor = int((log_dir / "forward" / "owner__repo" / "pid").read_text())
+    child = int((log_dir / "forward" / "owner__repo" / "child.pid").read_text())
     assert supervisor != child
-    assert (log_dir / "forward.ready").exists()
+    assert (log_dir / "forward" / "owner__repo" / "ready").exists()
 
     os.kill(child, 15)
     deadline = time.monotonic() + 6
@@ -1038,7 +1047,17 @@ def test_forwarder_pidfile_names_a_supervisor_that_respawns_and_stops(tmp_path: 
             break
         time.sleep(0.1)
     assert invocations.read_text().count("started") >= 2
-    assert "restarting in" in (log_dir / "forward.log").read_text()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if catch_up.exists() and len(catch_up.read_text().splitlines()) >= 2:
+            break
+        time.sleep(0.1)
+    assert catch_up.read_text().splitlines() == [
+        "catch-up-checks --repo owner/repo",
+        "catch-up-checks --repo owner/repo",
+    ]
+    assert "catch-up-attempt" in (log_dir / "forward/owner__repo/log").read_text()
+    assert "restarting in" in (log_dir / "forward" / "owner__repo" / "log").read_text()
 
     subprocess.run(
         [ROOT / "bin/harness.sh", "unforward"],
@@ -1049,7 +1068,7 @@ def test_forwarder_pidfile_names_a_supervisor_that_respawns_and_stops(tmp_path: 
     )
     with pytest.raises(ProcessLookupError):
         os.kill(supervisor, 0)
-    assert not (log_dir / "forward.child.pid").exists()
+    assert not (log_dir / "forward" / "owner__repo" / "child.pid").exists()
 
 
 def test_forwarder_teardown_reaps_processes_and_purges_its_github_hook(
@@ -1080,8 +1099,8 @@ def test_forwarder_teardown_reaps_processes_and_purges_its_github_hook(
         "SIGNALBOX_LOG_DIR": str(log_dir),
     }
     log_dir.mkdir()
-    (log_dir / "forward.repo").write_text("owner/repo")
-    forward_log = log_dir / "forward.log"
+    (log_dir / "forward" / "owner__repo").mkdir(parents=True, exist_ok=True)
+    forward_log = log_dir / "forward" / "owner__repo" / "log"
     with forward_log.open("w") as output:
         supervisor_process = subprocess.Popen(
             [ROOT / "bin/harness.sh", "_forward-supervise", "owner/repo"],
@@ -1090,12 +1109,12 @@ def test_forwarder_teardown_reaps_processes_and_purges_its_github_hook(
             stderr=subprocess.STDOUT,
             text=True,
         )
-        (log_dir / "forward.pid").write_text(str(supervisor_process.pid))
+        (log_dir / "forward" / "owner__repo" / "pid").write_text(str(supervisor_process.pid))
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not (log_dir / "forward.ready").exists():
+        while time.monotonic() < deadline and not (log_dir / "forward" / "owner__repo" / "ready").exists():
             time.sleep(0.1)
-        assert (log_dir / "forward.ready").exists()
-        child = int((log_dir / "forward.child.pid").read_text())
+        assert (log_dir / "forward" / "owner__repo" / "ready").exists()
+        child = int((log_dir / "forward" / "owner__repo" / "child.pid").read_text())
 
         stopped = subprocess.run(
             [ROOT / "bin/harness.sh", "unforward"],
@@ -1148,14 +1167,14 @@ def test_unforward_without_ownership_leaves_another_harness_hook(tmp_path: Path)
         capture_output=True,
         text=True,
     )
-    supervisor = int((log_a / "forward.pid").read_text())
+    supervisor = int((log_a / "forward" / "owner__repo" / "pid").read_text())
     deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and not (log_a / "forward.owner").exists():
+    while time.monotonic() < deadline and not (log_a / "forward" / "owner__repo" / "owner").exists():
         time.sleep(0.1)
-    assert (log_a / "forward.owner").exists()
+    assert (log_a / "forward" / "owner__repo" / "owner").exists()
 
     log_b.mkdir()
-    (log_b / "forward.repo").write_text("owner/repo")
+    (log_b / "forward" / "owner__repo").mkdir(parents=True, exist_ok=True)
     before = api_calls.read_text() if api_calls.exists() else ""
     stopped_b = subprocess.run(
         [ROOT / "bin/harness.sh", "unforward"],
@@ -1207,13 +1226,13 @@ def test_recycled_pid_cannot_satisfy_forward_hook_ownership(tmp_path: Path):
     gh.chmod(0o755)
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    (log_dir / "forward.repo").write_text("owner/repo")
+    (log_dir / "forward" / "owner__repo").mkdir(parents=True, exist_ok=True)
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "SIGNALBOX_LOG_DIR": str(log_dir),
     }
-    forward_log = log_dir / "forward.log"
+    forward_log = log_dir / "forward" / "owner__repo" / "log"
     with forward_log.open("w") as output:
         supervisor = subprocess.Popen(
             [ROOT / "bin/harness.sh", "_forward-supervise", "owner/repo"],
@@ -1222,20 +1241,20 @@ def test_recycled_pid_cannot_satisfy_forward_hook_ownership(tmp_path: Path):
             stderr=subprocess.STDOUT,
             text=True,
         )
-        (log_dir / "forward.pid").write_text(str(supervisor.pid))
+        (log_dir / "forward" / "owner__repo" / "pid").write_text(str(supervisor.pid))
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not (log_dir / "forward.owner").exists():
+        while time.monotonic() < deadline and not (log_dir / "forward" / "owner__repo" / "owner").exists():
             time.sleep(0.1)
-        assert (log_dir / "forward.owner").exists(), forward_log.read_text()
-        stale_start = (log_dir / "forward.owner").read_text().split(maxsplit=2)[1]
+        assert (log_dir / "forward" / "owner__repo" / "owner").exists(), forward_log.read_text()
+        stale_start = (log_dir / "forward" / "owner__repo" / "owner").read_text().split(maxsplit=2)[1]
         supervisor.terminate()
         assert supervisor.wait(timeout=5) == 0
 
     stranger = subprocess.Popen(["sleep", "30"])
     try:
-        (log_dir / "forward.pid").write_text(str(stranger.pid))
-        (log_dir / "forward.owner").write_text(
-            f"{stranger.pid} {stale_start} {log_dir.resolve()}\n"
+        (log_dir / "forward" / "owner__repo" / "pid").write_text(str(stranger.pid))
+        (log_dir / "forward" / "owner__repo" / "owner").write_text(
+            f"{stranger.pid} {stale_start} {(log_dir / 'forward' / 'owner__repo').resolve()}\n"
         )
         stopped = subprocess.run(
             [ROOT / "bin/harness.sh", "unforward"],
@@ -1274,7 +1293,7 @@ def test_foreign_log_directory_cannot_satisfy_forward_hook_ownership(
     gh.chmod(0o755)
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    (log_dir / "forward.repo").write_text("owner/repo")
+    (log_dir / "forward" / "owner__repo").mkdir(parents=True, exist_ok=True)
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -1285,8 +1304,8 @@ def test_foreign_log_directory_cannot_satisfy_forward_hook_ownership(
     try:
         raw_stat = Path(f"/proc/{live_process.pid}/stat").read_text()
         live_start = raw_stat.rsplit(") ", 1)[1].split()[19]
-        (log_dir / "forward.pid").write_text(str(live_process.pid))
-        (log_dir / "forward.owner").write_text(
+        (log_dir / "forward" / "owner__repo" / "pid").write_text(str(live_process.pid))
+        (log_dir / "forward" / "owner__repo" / "owner").write_text(
             f"{live_process.pid} {live_start} {tmp_path / 'foreign-logs'}\n"
         )
 
@@ -1333,14 +1352,14 @@ def test_forwarder_repairs_a_refused_stale_hook_then_connects(tmp_path: Path):
     gh.chmod(0o755)
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    (log_dir / "forward.repo").write_text("owner/repo")
+    (log_dir / "forward" / "owner__repo").mkdir(parents=True, exist_ok=True)
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "SIGNALBOX_LOG_DIR": str(log_dir),
     }
 
-    forward_log = log_dir / "forward.log"
+    forward_log = log_dir / "forward" / "owner__repo" / "log"
     with forward_log.open("w") as output:
         supervisor = subprocess.Popen(
             [ROOT / "bin/harness.sh", "_forward-supervise", "owner/repo"],
@@ -1350,9 +1369,9 @@ def test_forwarder_repairs_a_refused_stale_hook_then_connects(tmp_path: Path):
             text=True,
         )
         deadline = time.monotonic() + 6
-        while time.monotonic() < deadline and not (log_dir / "forward.ready").exists():
+        while time.monotonic() < deadline and not (log_dir / "forward" / "owner__repo" / "ready").exists():
             time.sleep(0.1)
-        assert (log_dir / "forward.ready").exists(), forward_log.read_text()
+        assert (log_dir / "forward" / "owner__repo" / "ready").exists(), forward_log.read_text()
         assert deleted.exists()
         assert attempts.read_text().count("attempt") == 2
         supervisor.terminate()
@@ -1380,7 +1399,7 @@ def test_forwarder_terminates_when_stale_hook_repair_does_not_work(tmp_path: Pat
     gh.chmod(0o755)
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    (log_dir / "forward.repo").write_text("owner/repo")
+    (log_dir / "forward" / "owner__repo").mkdir(parents=True, exist_ok=True)
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
@@ -1407,18 +1426,18 @@ def test_forwarder_lifecycle_and_launch_guard_are_explicit():
     lines = (ROOT / "bin" / "harness.sh").read_text().splitlines()
     code = "\n".join(line for line in lines if not line.lstrip().startswith("#"))
     forward_up = code.split("\nforward_up() {", 1)[1].split("\n}", 1)[0]
-    forward_down = code.split("\nforward_down() {", 1)[1].split("\n}", 1)[0]
+    forward_down = code.split("\nforward_down_one() {", 1)[1].split("\n}", 1)[0]
     launch = code.split("\nlaunch() {", 1)[1].split("\n}", 1)[0]
 
     assert "_forward-supervise" in forward_up
-    assert 'printf \'%s\' "$!" >"$FORWARD_PIDFILE"' in forward_up
+    assert 'printf \'%s\' "$!" >"$state/pid"' in forward_up
     assert forward_down.index('kill -TERM "$pid"') < forward_down.index(
         'kill -TERM "$child"'
     )
     assert "forward_pid" in launch
     assert "promote_capable" in launch
     assert "forwarder decision: refuse" in launch
-    assert "$0 forward <owner/name>" in launch
+    assert "$0 forward $code_repo" in launch
 
 
 def test_launch_checks_only_the_exact_target_repository():
@@ -1434,7 +1453,7 @@ def test_launch_checks_only_the_exact_target_repository():
 
 
 def _launch_with_remote_workflow_count(
-    tmp_path: Path, workflow_count: int, *extra_args: str
+    tmp_path: Path, workflow_count: int, *extra_args: str, repo: str = "owner/repo"
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -1445,7 +1464,7 @@ def _launch_with_remote_workflow_count(
         "gh": (
             "#!/usr/bin/env bash\n"
             "if [[ \"$1\" == api && \"$2\" == "
-            "'repos/owner/repo/actions/workflows' ]]; then\n"
+            f"'repos/{repo}/actions/workflows' ]]; then\n"
             f"  printf '%s\\n' {workflow_count}\n"
             "  exit 0\n"
             "fi\n"
@@ -1466,7 +1485,7 @@ def _launch_with_remote_workflow_count(
             "launch",
             "105",
             "--repo",
-            "owner/repo",
+            repo,
             *extra_args,
         ],
         env={
@@ -1551,7 +1570,7 @@ def test_remote_with_workflow_refuses_without_forwarder(tmp_path: Path):
     assert "forwarder decision: refuse (resolvable promote path; no forwarder)" in (
         result.stdout
     )
-    assert "forward <owner/name>" in result.stderr
+    assert "forward owner/repo" in result.stderr
     assert forwarded_args == ""
 
 
@@ -1574,7 +1593,176 @@ def test_forwarder_reports_a_supervisor_without_a_connected_tunnel():
     status = harness.split("\nstatus() {", 1)[1].split("\n}", 1)[0]
     forward_up = harness.split("\nforward_up() {", 1)[1].split("\n}", 1)[0]
 
-    assert "FORWARD_READYFILE" in status
+    assert '"$state/ready"' in status
     assert "supervisor up but tunnel is not connected" in status
     assert "the tunnel has not connected" in forward_up
     assert "retrying with capped backoff" in forward_up
+
+
+def test_forwarder_runs_one_supervisor_per_repo(tmp_path: Path):
+    """#468: starting and stopping one repo preserves the other tunnel."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "calls"
+    gh = fake_bin / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        "case \"$1\" in\n"
+        " extension) echo cli/gh-webhook; exit 0 ;;\n"
+        " api) exit 0 ;;\n"
+        "esac\n"
+        f"echo \"$*\" >> {calls}\n"
+        "trap 'exit 0' TERM INT\n"
+        "while true; do sleep 1; done\n"
+    )
+    gh.chmod(0o755)
+    logs = tmp_path / "logs"
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+           "SIGNALBOX_LOG_DIR": str(logs)}
+
+    def harness(*args):
+        return subprocess.run([ROOT / "bin/harness.sh", *args], env=env,
+                              check=True, capture_output=True, text=True, timeout=15)
+
+    try:
+        harness("forward", "a/one")
+        a = int((logs / "forward/a__one/pid").read_text())
+        harness("forward", "b/two")
+        b = int((logs / "forward/b__two/pid").read_text())
+        harness("forward", "a/one", "b/two")
+        os.kill(a, 0)
+        os.kill(b, 0)
+        assert calls.read_text().count("--repo=a/one") == 1
+        assert calls.read_text().count("--repo=b/two") == 1
+        status = harness("status").stdout
+        assert "a/one" in status and "b/two" in status
+        harness("unforward", "b/two")
+        os.kill(a, 0)
+        with pytest.raises(ProcessLookupError):
+            os.kill(b, 0)
+        harness("unforward")
+        with pytest.raises(ProcessLookupError):
+            os.kill(a, 0)
+    finally:
+        harness("unforward")
+
+
+def test_launch_refuses_when_its_own_repo_is_not_forwarded(tmp_path: Path):
+    """#468: another repo's connected supervisor cannot satisfy launch."""
+    state = tmp_path / "logs/forward/a__one"
+    state.mkdir(parents=True)
+    (state / "pid").write_text(str(os.getpid()))
+    (state / "ready").touch()
+    result, forwarded = _launch_with_remote_workflow_count(
+        tmp_path, 1, repo="b/two"
+    )
+    assert result.returncode != 0
+    assert "forward b/two" in result.stderr
+    assert forwarded == ""
+
+def test_launch_requires_a_ready_tunnel_for_its_repo(tmp_path: Path):
+    state = tmp_path / "logs/forward/owner__repo"
+    state.mkdir(parents=True)
+    (state / "pid").write_text(str(os.getpid()))
+    result, forwarded = _launch_with_remote_workflow_count(tmp_path, 1)
+    assert result.returncode != 0
+    assert "forward owner/repo" in result.stderr
+    assert forwarded == ""
+
+
+@pytest.mark.parametrize("origin", [
+    "git@github.com:b/two.git",
+    "git@github.com:b/foo.js.git",
+    "https://github.com/b/foo.js.git",
+    "https://github.com/b/foo.js",
+])
+def test_launch_uses_code_origin_instead_of_issue_repo(tmp_path: Path, origin: str):
+    """#468: a code checkout's origin selects the required tunnel."""
+    code = tmp_path / "code"
+    subprocess.run(["git", "init", str(code)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(code), "remote", "add", "origin",
+         origin],
+        check=True, capture_output=True,
+    )
+    workflows = code / ".github/workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "ci.yml").write_text("name: ci\n")
+    state = tmp_path / "logs/forward/owner__repo"
+    state.mkdir(parents=True)
+    (state / "pid").write_text(str(os.getpid()))
+    (state / "ready").touch()
+    result, forwarded = _launch_with_remote_workflow_count(
+        tmp_path, 1, "--repo-path", str(code)
+    )
+    assert result.returncode != 0
+    expected_repo = "b/foo.js" if "foo.js" in origin else "b/two"
+    assert f"forward {expected_repo}\n" in result.stderr
+    assert forwarded == ""
+
+
+def test_unforward_stops_a_legacy_flat_supervisor(tmp_path: Path):
+    """#468: upgrading does not strand an older harness's supervisor."""
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    supervisor = subprocess.Popen(["sleep", "30"])
+    try:
+        (logs / "forward.pid").write_text(str(supervisor.pid))
+        (logs / "forward.owner").write_text("legacy owner")
+        (logs / "forward.repo").write_text("owner/repo")
+        (logs / "forward.ready").touch()
+        (logs / "forward.child.pid").write_text("")
+        result = subprocess.run(
+            [ROOT / "bin/harness.sh", "unforward"],
+            env={**os.environ, "SIGNALBOX_LOG_DIR": str(logs)},
+            capture_output=True, text=True, timeout=5,
+        )
+        assert result.returncode == 0, result.stderr
+        assert supervisor.wait(timeout=5) == -15
+        for name in ("pid", "child.pid", "ready", "owner", "repo"):
+            assert not (logs / f"forward.{name}").exists()
+    finally:
+        if supervisor.poll() is None:
+            supervisor.terminate()
+        supervisor.wait(timeout=5)
+
+
+@pytest.mark.parametrize(("workflow_count", "extra_args"), [
+    (0, ()),
+    (1, ("--no-forwarder",)),
+])
+def test_launch_unresolved_repo_preserves_forwarder_warning(
+    tmp_path: Path, workflow_count: int, extra_args: tuple[str, ...]
+):
+    result, forwarded = _launch_with_remote_workflow_count(
+        tmp_path, workflow_count, *extra_args, repo="foo"
+    )
+    assert result.returncode == 0, result.stderr
+    assert "forwarder decision: warn" in result.stdout
+    assert "invalid repository" not in result.stderr
+    assert forwarded == "launch 105 --repo foo\n"
+
+
+@pytest.mark.parametrize("empty_forward_dir", [False, True])
+def test_status_without_forwarder_state_reports_failure(
+    tmp_path: Path, empty_forward_dir: bool
+):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    for name in ("pgrep", "fuser"):
+        executable = fake_bin / name
+        executable.write_text("#!/usr/bin/env bash\nexit 1\n")
+        executable.chmod(0o755)
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    if empty_forward_dir:
+        (logs / "forward").mkdir()
+    result = subprocess.run(
+        [ROOT / "bin/harness.sh", "status"],
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+             "SIGNALBOX_LOG_DIR": str(logs)},
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "forwarder: FORWARDER FAILURE: down" in result.stdout
+    assert "forward <owner/name>" in result.stdout

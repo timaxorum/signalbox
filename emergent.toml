@@ -194,6 +194,7 @@ args = ["-s", "http.request", "--publish-as", "checks.observed", "--",
         | select(((.conclusion // "") | ascii_upcase) | IN("CANCELLED", "STALE") | not)
         | select((.pull_requests | length) > 0)
         | {pr: .pull_requests[0].number,
+           suite_id: .id,
            run_id: (.head_branch | ltrimstr("signalbox/run-")),
            code_repo: $repo,
            sha: .head_sha,

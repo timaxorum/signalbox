@@ -1923,6 +1923,7 @@ def delivery(conclusion: str, branch: str = "signalbox/run-sb-56",
             "action": action,
             "repository": {"full_name": "rrrodzilla/signalbox"},
             "check_suite": {
+                "id": 99,
                 "head_branch": branch,
                 "head_sha": "e0a1742",
                 "conclusion": conclusion,
@@ -1946,6 +1947,12 @@ def test_a_concluded_suite_becomes_a_promote_signal(conclusion, expected):
     assert routed["run_id"] == "sb-56", "run identity comes from the branch name"
     assert routed["code_repo"] == "rrrodzilla/signalbox"
     assert "repo" not in routed
+
+
+def test_a_concluded_suite_carries_its_suite_id():
+    routed = route("route-check-suite", delivery("success"))
+    assert routed is not None
+    assert routed["suite_id"] == 99
 
 
 def test_checks_passed_carries_string_run_identity_to_notes_planning():
