@@ -728,9 +728,18 @@ def open_pr(payload: dict) -> dict:
     if not verified:
         return {**payload, "ok": False,
                 "error": err or view_err or "could not verify the requested PR was opened"}
+    # The observed URL identifies the code repo, independently of the issue
+    # repo carried by the run (#467, #434).
+    code_repo = payload.get("code_repo")
+    match = re.fullmatch(
+        r"https://github\.com/([^/]+/[^/]+)/pull/[0-9]+/?",
+        str(observed.get("url") or ""),
+    )
+    if match:
+        code_repo = match.group(1)
     return {
         **payload, "ok": True, "url": observed.get("url") or out,
-        "pr": observed_number,
+        "pr": observed_number, "code_repo": code_repo,
     }
 
 
@@ -1056,9 +1065,9 @@ def rehydrate(kind: str, payload: dict) -> dict:
     arrived for a signalbox branch this engine is not tracking (a leftover PR from
     an earlier run, most likely), and there is no run to attribute it to.
     """
-    from signalbox.dispatch import pending_path
+    from signalbox.dispatch import pending_read_path
 
-    marker = pending_path(kind, payload)
+    marker = pending_read_path(kind, payload)
     try:
         stored = json.loads(marker.read_text())
     except (OSError, json.JSONDecodeError) as exc:

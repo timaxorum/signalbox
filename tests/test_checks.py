@@ -178,6 +178,7 @@ def test_close_issue_after_a_suite_targets_the_issue_repo(tmp_path, monkeypatch)
     monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
     stored = {
         "run_id": "sb-12", "repo": "AxorumHQ/internal", "issue": 12, "pr": 7,
+        "code_repo": "AxorumHQ/axorum",
     }
     acts.mark_pending("pr", stored)
     observed = {
@@ -234,7 +235,7 @@ def test_rehydrate_restores_run_identity_and_refreshes_the_marker(tmp_path, monk
     }
     marker = acts.mark_pending("pr", opened)
     assert marker.exists()
-    assert marker.name == "pr-57.json"
+    assert marker.name == "pr-rrrodzilla__signalbox-57.json"
     marker.touch()
     old_mtime = marker.stat().st_mtime - 3600
     import os
