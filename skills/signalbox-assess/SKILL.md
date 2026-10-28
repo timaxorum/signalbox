@@ -42,14 +42,17 @@ is `false`, the suite did not run, whatever else the payload says.
 | `ran: false` | **`needs_human`**, never `clear` |
 | `errored: true` | never reaches the assessor; routing sends `suite.errored` to a human |
 
-A repository with no detectable suite is a real situation and reports
-`ran: false` with a reason. That is not a pass. It means nobody can tell whether
-this change works, which is exactly the case a human should look at.
-This includes a diff that maps to no suite in a repository with no suite marker:
-`ran: false` still means `needs_human`.
+An empty or uncomputable diff with no detectable suite reports `ran: false`
+with a reason and means `needs_human`, never a pass. A non-empty diff that no
+suite covers reports `errored: true` with reason `no suite covers the change`
+and never reaches the assessor; routing sends it to a human.
 
 A diff-scoped pass is eligible for `clear` under the same decision rules as a
 full-suite pass. `suite_scope: diff` alone is not grounds for `needs_human`.
+When a root runner also ran, `changed_paths_unmapped` lists paths only that
+root suite covered; weigh them as usual. When no suite covers a changed path,
+the mapped suites still run, but the payload is `errored: true` and never
+reaches the assessor: an untested path always goes to a human.
 
 A detected suite whose runner could not be invoked reports `errored: true`.
 Stage s2-routing sends that payload to `suite.errored` and then to a human, so

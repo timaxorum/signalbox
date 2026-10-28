@@ -1249,8 +1249,10 @@ def test_diff_package_without_test_is_unmapped(tmp_path, monkeypatch):
     monkeypatch.setattr(acts, "_run", lambda *a, **k: (0, "client/index.ts", ""))
     result = acts.run_suite({"run_id": "absent", "base_sha": "base"})
     assert result["changed_paths_unmapped"] == ["client/index.ts"]
-    assert result["ran"] is result["errored"] is False
-    assert result["reason"] == "no suite detected"
+    assert result["ran"] is False
+    assert result["ok"] is False
+    assert result["errored"] is True
+    assert result["reason"] == "no suite covers the change"
 
 
 @pytest.mark.parametrize("mode", ["failure", "timeout", "budget"])
@@ -1325,3 +1327,102 @@ def test_run_tmp_dir_refuses_a_run_id_that_is_not_one_plain_segment(bad):
     from signalbox.paths import run_tmp_dir
     with pytest.raises(ValueError):
         run_tmp_dir(bad)
+
+
+@pytest.mark.parametrize("root_runner", [False, True])
+def test_mapped_and_unmapped_changes_keep_selected_suites(tmp_path, monkeypatch, root_runner):
+    from signalbox import acts
+
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    root = tmp_path / "worktrees/mixed"
+    client = root / "client"
+    client.mkdir(parents=True)
+    (client / "package.json").write_text('{"scripts":{"test":"vitest"}}')
+    # A package without a test script is unmapped, but still has a root runner.
+    if root_runner:
+        (root / "package.json").write_text("{}")
+    monkeypatch.setattr(acts.shutil, "which", lambda name: name)
+    calls = []
+
+    def run(cmd, cwd=None, timeout=120):
+        if cmd[:2] == ["git", "diff"]:
+            return 0, "client/index.ts\ndocs/readme.md", ""
+        calls.append((cmd, cwd))
+        return 0, "2 passed", ""
+
+    monkeypatch.setattr(acts, "_run", run)
+    result = acts.run_suite({"run_id": "mixed", "base_sha": "base"})
+    expected = [(["pnpm", "test"], str(client))]
+    if root_runner:
+        expected.append((["pnpm", "test"], str(root)))
+    assert calls == expected
+    assert result["changed_paths_unmapped"] == ["docs/readme.md"]
+    assert result["ran"] is result["ok"] is True
+    # Without a root runner the readme is untested: the suites ran, but the
+    # run goes to a person rather than being eligible for clear.
+    assert result["errored"] is (not root_runner)
+    if not root_runner:
+        assert result["reason"] == "no suite covers these changed paths: docs/readme.md"
+    assert result["suite_scope"] == "diff"
+    assert len(result["suites"]) == len(expected)
+
+
+@pytest.mark.parametrize("change,code,reason", [
+    ("Makefile", 0, "no suite covers the change"),
+    ("", 0, "no suite detected"),
+    ("", 1, "no suite detected"),
+])
+def test_diff_fallback_without_root_runner(tmp_path, monkeypatch, change, code, reason):
+    from signalbox import acts
+
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    root = tmp_path / "worktrees/uncovered"
+    root.mkdir(parents=True)
+    calls = []
+
+    def run(cmd, cwd=None, timeout=120):
+        calls.append(cmd)
+        assert cmd[:2] == ["git", "diff"]
+        return code, change, "git failed" if code else ""
+
+    monkeypatch.setattr(acts, "_run", run)
+    result = acts.run_suite({"run_id": "uncovered", "base_sha": "base"})
+    assert result["errored"] is bool(change)
+    assert result["reason"] == reason
+    assert result["ran"] is result["ok"] is False
+    assert result["suites"] == []
+    assert len(calls) == 1
+    assert not (tmp_path / "locks").exists()
+
+
+@pytest.mark.parametrize("mapped", [False, True])
+def test_unmapped_changes_run_root_suite_once(tmp_path, monkeypatch, mapped):
+    from signalbox import acts
+
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    root = tmp_path / "worktrees/root-suite"
+    root.mkdir(parents=True)
+    (root / "Cargo.toml").write_text("[workspace]")
+    monkeypatch.setattr(acts.shutil, "which", lambda name: name)
+    meta = {"workspace_root": str(root), "workspace_members": ["root"],
+        "packages": [{"id": "root", "name": "root", "manifest_path": str(root / "member/Cargo.toml")}]
+                    if mapped else [],
+        "resolve": {"nodes": [{"id": "root", "dependencies": []}]}}
+    calls = []
+
+    def run(cmd, cwd=None, timeout=120):
+        if cmd[:2] == ["git", "diff"]:
+            return 0, "member/src/lib.rs\ndocs/readme.md" if mapped else "docs/readme.md", ""
+        if cmd[:2] == ["cargo", "metadata"]:
+            return 0, json.dumps(meta), ""
+        calls.append((cmd, cwd))
+        return 0, "3 passed", ""
+
+    monkeypatch.setattr(acts, "_run", run)
+    result = acts.run_suite({"run_id": "root-suite", "base_sha": "base"})
+    expected = ["cargo", "nextest", "run"] + (["-p", "root"] if mapped else [])
+    assert calls == [(expected, str(root))]
+    assert result["changed_paths_unmapped"] == ["docs/readme.md"]
+    assert result["ran"] is result["ok"] is True
+    assert result["errored"] is False
+    assert len(result["suites"]) == 1

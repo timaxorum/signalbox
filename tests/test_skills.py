@@ -142,7 +142,19 @@ def test_assess_skill_reports_suite_scope_without_changing_decision_rules():
     assert "state whether the run was `diff` or `full`" in prose
     assert "CI runs the full suite before merge" in prose
     assert "`suite_scope: diff` alone is not grounds for `needs_human`" in prose
-    assert "`ran: false` still means `needs_human`" in prose
+    assert (
+        "An empty or uncomputable diff with no detectable suite reports `ran: false` "
+        "with a reason and means `needs_human`, never a pass"
+    ) in prose
+    assert (
+        "A non-empty diff that no suite covers reports `errored: true` with reason "
+        "`no suite covers the change` and never reaches the assessor"
+    ) in prose
+    assert (
+        "When no suite covers a changed path, the mapped suites still run, but the "
+        "payload is `errored: true` and never reaches the assessor: an untested path "
+        "always goes to a human."
+    ) in prose
 
 
 def test_remediate_skill_names_only_the_wired_resume_topic():
