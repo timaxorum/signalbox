@@ -1104,10 +1104,68 @@ def rehydrate(kind: str, payload: dict) -> dict:
             f"no {kind} marker at {marker}: {exc}"
         ) from exc
     if kind == "pr":
-        marker.touch()
+        # #468: preserve the read path, including legacy markers.
+        if payload.get("suite_id") is not None:
+            delivered = stored.setdefault("delivered_suites", [])
+            if payload["suite_id"] not in delivered:
+                delivered.append(payload["suite_id"])
+        marker.write_text(json.dumps(stored))
     else:
         marker.unlink(missing_ok=True)
-    return rehydrated(stored, payload)
+    result = rehydrated(stored, payload)
+    result.pop("delivered_suites", None)
+    return result
+
+
+def catch_up_checks(repo: str) -> None:
+    """Replay completed suites missed while a repo's tunnel was disconnected."""
+    from signalbox import emit
+
+    for marker in sorted((state_dir() / "pending").glob("pr-*.json")):
+        try:
+            stored = json.loads(marker.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(stored, dict):
+            continue
+        code_repo = stored.get("code_repo")
+        if not code_repo:
+            match = re.fullmatch(
+                r"https://github\.com/([^/]+/[^/]+)/pull/[0-9]+/?",
+                str(stored.get("url") or ""),
+            )
+            code_repo = match.group(1) if match else None
+        if code_repo != repo:
+            continue
+        pr = stored.get("pr")
+        try:
+            code, out, err = _run([
+                "gh", "pr", "view", str(pr), "--repo", repo,
+                "--json", "headRefOid,headRefName",
+            ])
+            if code:
+                raise ValueError(err or out or "gh pr view failed")
+            head = json.loads(out)["headRefOid"]
+            code, out, err = _run([
+                "gh", "api", f"repos/{repo}/commits/{head}/check-suites",
+            ])
+            if code:
+                raise ValueError(err or out or "gh api failed")
+            suites = json.loads(out)["check_suites"]
+            for suite in suites:
+                if (suite.get("status") != "completed"
+                        or suite.get("id") in (stored.get("delivered_suites") or [])):
+                    continue
+                status = emit.post(
+                    {"action": "completed", "repository": {"full_name": repo},
+                     "check_suite": suite},
+                    url="http://127.0.0.1:8104/github",
+                    headers={"X-GitHub-Event": "check_suite"},
+                )
+                _out({"repo": repo, "pr": pr, "suite_id": suite["id"],
+                      "ok": True, "status": status})
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+            _out({"repo": repo, "pr": pr, "ok": False, "error": str(exc)})
 
 
 def clear_pending(kind: str, payload: dict) -> bool:
@@ -1176,6 +1234,15 @@ def notify(payload: dict) -> None:
 
 
 def main(command: str, argv: list[str]) -> int:
+    if command == "catch-up-checks":
+        import argparse
+
+        parser = argparse.ArgumentParser(prog="signalbox catch-up-checks")
+        parser.add_argument("--repo", required=True)
+        args = parser.parse_args(argv)
+        catch_up_checks(args.repo)
+        return 0
+
     if command == "reap":
         import argparse
 

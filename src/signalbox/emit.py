@@ -98,11 +98,14 @@ def parse_fields(pairs: list[str]) -> dict:
     return fields
 
 
-def post(body: dict, url: str | None = None, timeout: float = 10.0) -> int:
+def post(
+    body: dict, url: str | None = None, timeout: float = 10.0,
+    headers: dict[str, str] | None = None,
+) -> int:
     request = urllib.request.Request(
         url or control_url(),
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **(headers or {})},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
