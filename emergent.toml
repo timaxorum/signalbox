@@ -227,8 +227,10 @@ publishes = ["checks.silent"]
 [[handlers]]
 name = "prepare-workspace"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
+# 30 minutes: prepare installs each pnpm package's dependencies (#465), up to
+# 300 s each, before any shard runs.
 args = ["-s", "run.requested", "--publish-as", "workspace.prepare-attempted",
-        "-t", "60000", "--",
+        "-t", "1800000", "--",
         "signalbox", "prepare-workspace"]
 subscribes = ["run.requested"]
 publishes = ["workspace.prepare-attempted"]

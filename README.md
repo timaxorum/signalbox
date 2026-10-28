@@ -277,6 +277,17 @@ both arms and `timed_out: false` becomes `run.completed`; a
 Completed runs release their worktrees, while halted runs retain them as
 evidence of the missing arm.
 
+Before publishing `workspace.ready`, `prepare-workspace` installs dependencies
+for each tracked pnpm package (or once at the root of a pnpm workspace), using
+the exact pnpm version pinned in `package.json` or a pnpm/action-setup workflow
+step when available. Installs run outside the agent sandbox with a frozen
+lockfile, development dependencies, and a shared pnpm store under the state
+directory. Because they run outside the sandbox, they run with `--ignore-scripts`
+and a minimal environment (`PATH`, `HOME`, locale, `TMPDIR`): no credentials
+reach a repository's install. Each install has 300 s; the handler, 30 minutes. Preparation and re-entry return a `deps` list of `{dir, ok}` results;
+failed installs include an `error` tail and leave workspace preparation successful.
+Repositories without pnpm lockfiles return `deps: []`.
+
 The promote path waits on a push, not a poll. GitHub delivers `check_suite.completed` to a loopback `http-source` and routers turn it into the vocabulary; `gh webhook forward` opens the tunnel, since GitHub cannot reach `127.0.0.1`. What that buys is a conclusion in about a second instead of up to a poll interval, and no `gh` call per tick — but it does not remove the reaper. A push source makes arrivals observable and silence invisible, so a missing workflow, a revoked hook, and a dropped delivery are indistinguishable from "still building": all three produce zero events. `reap-prs` is what turns that into `checks.silent`.
 
 ## Principles the wiring enforces
