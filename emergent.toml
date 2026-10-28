@@ -889,6 +889,61 @@ args = ["-s", "branch.rebase-attempted", "--publish-as", "branch.rebase-invalid-
 subscribes = ["branch.rebase-attempted"]
 publishes = ["branch.rebase-invalid-verdict"]
 
+# #449: Check signatures after the rebase verdict is accepted.
+[[handlers]]
+name = "verify-signatures"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "branch.rebased", "--publish-as", "branch.signing-attempted",
+        "-e", "branch.signing-errored", "-t", "900000", "--",
+        "signalbox", "verify-signatures"]
+subscribes = ["branch.rebased"]
+publishes = ["branch.signing-attempted", "branch.signing-errored"]
+
+# #449: Only verified commits reach the suite.
+[[handlers]]
+name = "route-signing-ok"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "branch.signing-attempted", "--publish-as", "branch.signed", "--",
+        "jq", "-c", 'select(.ok == true)']
+subscribes = ["branch.signing-attempted"]
+publishes = ["branch.signed"]
+
+# #449: Preserve refusal identity before terminal fan-out.
+[[handlers]]
+name = "route-signing-refused"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "branch.signing-attempted", "--publish-as", "branch.signing-refused", "--",
+        "jq", "-c", 'select(.ok == false) | . + {stranded_topic: "branch.signing-attempted"}']
+subscribes = ["branch.signing-attempted"]
+publishes = ["branch.signing-refused"]
+
+# #449: Unsigned commits halt rather than entering remediation.
+[[handlers]]
+name = "route-signing-refused-terminal"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "branch.signing-refused", "--publish-as", "run.halted", "--",
+        "jq", "-c", '. + {reason: "unsigned commit after rebase"}']
+subscribes = ["branch.signing-refused"]
+publishes = ["run.halted"]
+
+# #449: Invocation failures retain exit code and stderr.
+[[handlers]]
+name = "route-signing-errored-halted"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "branch.signing-errored", "--publish-as", "run.halted", "--",
+        "jq", "-c", 'select(((.error.exit_code | type) | IN("number", "null")) and (.error.stderr | type) == "string") | . + {reason: "signature verification failed (\(if .error.exit_code == null then "no exit code" else "exit \(.error.exit_code)" end)): \(.error.stderr)"}']
+subscribes = ["branch.signing-errored"]
+publishes = ["run.halted"]
+
+# #449: Observe re-signing without driving control flow.
+[[handlers]]
+name = "route-rebase-resigned"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "branch.signed", "--publish-as", "rebase.resigned", "--",
+        "jq", "-c", 'select(((.resigned_shas // []) | length) > 0)']
+subscribes = ["branch.signed"]
+publishes = ["rebase.resigned"]
+
 # run-suite is a deliberate global lock, an exception to the DEPTH/WIDTH
 # rationale above: on 2026-10-26 (internal #438), four axorum suites ran together
 # at load 166 on 48 cores and caused spurious HTTP 408 failures.
@@ -906,9 +961,9 @@ publishes = ["branch.rebase-invalid-verdict"]
 [[handlers]]
 name = "run-suite"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "branch.rebased", "--publish-as", "suite.run-attempted",
+args = ["-s", "branch.signed", "--publish-as", "suite.run-attempted",
         "-t", "7200000", "--max-concurrent", "1", "--", "signalbox", "run-suite"]
-subscribes = ["branch.rebased"]
+subscribes = ["branch.signed"]
 publishes = ["suite.run-attempted"]
 
 [[handlers]]
@@ -1549,6 +1604,7 @@ subscribes = ["exec.output", "exec.exit",
               "approval.granted", "approval.requested", "assess.failed", "branch.push-failed",
               "branch.push-attempted", "branch.pushed", "branch.rebase-attempted", "branch.rebase-conflicted",
               "branch.rebase-failed", "branch.rebase-invalid-verdict", "branch.rebased",
+              "branch.signing-attempted", "branch.signed", "branch.signing-refused", "branch.signing-errored", "rebase.resigned",
               "checks.detail-attempted", "checks.detail-failed", "checks.detailed",
               "checks.failed", "checks.observed", "checks.passed", "checks.reported",
               "checks.silent", "checks.unknown-pr",
@@ -1604,12 +1660,14 @@ subscribes = ["approval.requested", "shard.escalated", "run.halted",
 name = "trace"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"
 args = ["-s", "run.completed", "-s", "run.halted", "-s", "control.unknown-event",
+        "-s", "branch.signing-attempted", "-s", "branch.signed", "-s", "branch.signing-refused", "-s", "branch.signing-errored", "-s", "rebase.resigned",
         "-s", "plan.invalid-verdict", "-s", "notes.invalid-verdict", "-s", "review.invalid-verdict",
         "-s", "shard.invalid-verdict",
         "-s", "gate.invalid-verdict", "-s", "branch.rebase-invalid-verdict",
         "-s", "checks.unknown-pr", "-s", "remediation.invalid-verdict",
         "-s", "checks.silent", "--", "jq", "-c", "."]
-subscribes = ["run.completed", "run.halted", "control.unknown-event",
+subscribes = ["branch.signing-attempted", "branch.signed", "branch.signing-refused", "branch.signing-errored", "rebase.resigned",
+              "run.completed", "run.halted", "control.unknown-event",
               "plan.invalid-verdict", "notes.invalid-verdict", "review.invalid-verdict", "shard.invalid-verdict",
               "gate.invalid-verdict", "branch.rebase-invalid-verdict",
               "checks.unknown-pr", "remediation.invalid-verdict", "checks.silent"]

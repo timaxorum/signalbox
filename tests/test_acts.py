@@ -207,6 +207,9 @@ def test_prepare_workspace_reentry_recovers_the_original_base_after_branch_moves
             return (0, "signalbox/run-sb-70", "")
         if cmd == ["git", "merge-base", "HEAD", "main"]:
             return (0, "launch-pinned", "")
+        if cmd in (["git", "config", "extensions.worktreeConfig", "true"],
+                   ["git", "config", "--worktree", "commit.gpgsign", "true"]):
+            return (0, "", "")
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(acts, "_run", fake_run)
@@ -220,6 +223,8 @@ def test_prepare_workspace_reentry_recovers_the_original_base_after_branch_moves
     assert calls == [
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         ["git", "merge-base", "HEAD", "main"],
+        ["git", "config", "extensions.worktreeConfig", "true"],
+        ["git", "config", "--worktree", "commit.gpgsign", "true"],
     ]
 
 
@@ -252,7 +257,8 @@ def test_prepare_workspace_refuses_an_unverified_created_tree_with_identity(
 
     monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
     monkeypatch.delenv("SIGNALBOX_VAULT", raising=False)
-    responses = iter([(0, "", ""), (0, "wrong-head", "")])
+    responses = iter([(0, "", ""), (0, "", ""), (0, "", ""),
+                      (0, "wrong-head", "")])
     monkeypatch.setattr(acts, "_run", lambda *a, **k: next(responses))
 
     result = prepare_workspace({

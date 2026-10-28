@@ -47,6 +47,8 @@ branch before changing it. Preserve both the run's work and upstream changes
 when resolving conflicts, and continue the rebase only after the index has no
 unmerged entries.
 
+Commits must stay signed: never pass `--no-gpg-sign` or `-c commit.gpgsign=false` to rebase or commit; the worktree's `commit.gpgsign` config does the signing.
+
 An unresolvable conflict is data, not permission to make it disappear. Abort
 the rebase to leave the worktree usable, report `ok: false`, and name all paths
 that conflicted. Never resolve a conflict by dropping a hunk merely to make the

@@ -35,6 +35,7 @@ REENTRY_HANDLERS = (
 HIDDEN_TOPICS: dict[str, str] = {
     "assess.failed": "primitive failure detail is summarized by run.halted",
     "branch.rebase-failed": "primitive failure detail is summarized by run.halted",
+    "branch.signing-errored": "primitive failure detail is summarized by run.halted",
     "branch.rebase-invalid-verdict": "shown in the remediation detail block",
     "checks.silent": "shown in the remediation detail block",
     "checks.unknown-pr": "webhook validation detail is outside the lifecycle overview",
