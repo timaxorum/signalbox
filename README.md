@@ -6,7 +6,7 @@ The name is from railway signaling. A signal box is where the interlocking lives
 
 ## The shape
 
-One engine. Four sources, one hundred thirty-three handlers, eleven sinks, and no script that knows what comes next.
+One engine. Four sources, one hundred thirty-five handlers, twelve sinks, and no script that knows what comes next.
 
 ```
 route-run-requested ─> [run.requested] ─> prepare-workspace, dashboard
@@ -18,16 +18,17 @@ route-prepare-ready ─> [workspace.ready] ─> fetch-issue, dashboard
 ├─< from: route-prepare-failed
 └─> to: route-prepare-failed-halted, dashboard
 [run.halted]
-├─< from: route-prepare-failed-halted, route-fetch-failed-halted,
-│         route-plan-draft-failed-halted, route-plan-exhausted,
-│         route-plan-audit-failed-halted, route-audit-exhausted,
-│         route-review-failed-halted, guard-ci-review-rounds-exhaust,
-│         route-ci-review-invalid-halted, route-stage-dirty,
-│         route-rebase-failed-halted, route-signing-refused-terminal,
-│         route-signing-errored-halted, route-suite-error-halted,
-│         route-assess-failed-halted, route-remediation-closed-halted,
-│         route-remediation-invalid-halted, route-remediation-failed-halted,
-│         guard-ci-rounds-exhaust, route-ci-findings-refused-terminal,
+├─< from: route-cancel-halted, route-prepare-failed-halted,
+│         route-fetch-failed-halted, route-plan-draft-failed-halted,
+│         route-plan-exhausted, route-plan-audit-failed-halted,
+│         route-audit-exhausted, route-review-failed-halted,
+│         guard-ci-review-rounds-exhaust, route-ci-review-invalid-halted,
+│         route-stage-dirty, route-rebase-failed-halted,
+│         route-signing-refused-terminal, route-signing-errored-halted,
+│         route-suite-error-halted, route-assess-failed-halted,
+│         route-remediation-closed-halted, route-remediation-invalid-halted,
+│         route-remediation-failed-halted, guard-ci-rounds-exhaust,
+│         route-ci-findings-refused-terminal,
 │         route-ci-commit-refused-terminal, route-ci-shard-terminal-halted,
 │         route-notes-plan-failed-halted, route-notes-invalid-halted,
 │         route-completion-short
@@ -85,6 +86,9 @@ route-check-ran ─> [shard.check-ran] ─> dashboard
 [approval.granted]
 ├─< from: route-approval-granted
 └─> to: push-branch, clear-approval-pending, dashboard
+[run.cancel-requested (halt)]
+├─< from: route-cancel-requested
+└─> to: route-cancel-halted, stop-run, dashboard
 route-check-suite ─> [checks.observed] ─> rehydrate-pr, dashboard
 [branch.signing-attempted]
 ├─< from: verify-signatures
@@ -404,6 +408,11 @@ When a run parks at the human gate, `notify` prints the paste-ready command
 `signalbox approve <run-id>`. Run that exact invocation to approve it; there is
 no port to supply and no event envelope to construct. Approval enters through
 the control ingress and resumes only the named run.
+
+To cancel a run, use `signalbox cancel <run-id> --reason "wrong base"`
+(the reason defaults to `operator`). Cancellation enters through control as
+`run.cancel-requested`, stops that run's worktree processes, and halts it even
+while it is waiting for CI or approval. The worktree remains for diagnosis (#469).
 
 The forwarder is the operator's job rather than the topology's, for two reasons: a primitive that opened a tunnel would be a primitive reaching outside the topology, and the engine cannot detect its own missing deliveries. The harness supervises the `gh webhook forward` websocket with capped backoff, timestamps every restart in `.harness/forward/<owner>__<name>/log`, and stops the supervisor before its child during `down` and `restart`. `status` prints a loud failure with the runnable recovery command when the loop is absent; if the loop exists but its tunnel has not connected, both `forward` and `status` say that it is retrying and point to the log instead of calling it up. When the forwarder is down, `launch` refuses only if it can resolve the remote target and detect at least one CI workflow, then names the recovery command. With `--repo-path`, the code checkout's GitHub origin identifies the required forwarder and its local workflows determine whether promotion is possible. Otherwise `--repo` identifies the repo and its workflows are queried through `gh`; if `gh` is unauthenticated or offline and the workflow state cannot be determined, `launch` warns and continues instead of escalating that uncertainty into a refusal. Without `--repo`, it checks the selected local checkout (the current directory unless `--repo-path` is given); that path must itself be a Git root with an origin and a `.github/workflows/*.yml` or `.yaml` file, so a nested demo directory does not accidentally inherit its enclosing checkout's remote. A non-GitHub origin falls back to `--repo`; a promote-capable checkout with neither requires an explicit `--repo`. Each tunnel connection also runs `signalbox catch-up-checks --repo <repo>` to recover missed CI completions. Pass `--no-forwarder` to explicitly downgrade a missing-forwarder refusal to the same warning and continue the launch.
 

@@ -2324,3 +2324,39 @@ def test_signing_notifies_only_through_the_halt_terminal():
     assert "run.halted" in notify["subscribes"]
     for sink in ("dashboard", "trace"):
         assert topics <= set(named(SINKS, sink)["subscribes"])
+
+
+def test_a_cancel_request_routes_to_halted_with_its_reason():
+    payload = {"run_id": "454-1", "reason": "wrong base", "pr": 9}
+    assert route("route-cancel-halted", payload) == {
+        "run_id": "454-1", "reason": "cancelled: wrong base", "pr": 9,
+    }
+    assert route("route-cancel-halted", {"run_id": "454-1"}) == {
+        "run_id": "454-1", "reason": "cancelled: operator",
+    }
+
+
+def test_cancel_is_known_control_vocabulary():
+    body = {"event": "run.cancel-requested", "run_id": "454-1", "pr": 9}
+    assert route("route-unknown-emission", {"body": body}) is None
+    assert route("route-cancel-requested", {"body": body}) == body
+    for run_id in (None, ""):
+        missing = {"event": "run.cancel-requested", "run_id": run_id}
+        assert route("route-cancel-requested", {"body": missing}) is None
+    assert route("route-cancel-requested", {
+        "body": {"event": "run.cancel-requested"},
+    }) is None
+    assert route("route-cancel-requested", {
+        "body": {"event": "approval.granted", "run_id": "454-1"},
+    }) is None
+
+
+def test_cancel_request_is_marked_and_stopped_by_one_sink():
+    stopper = named(SINKS, "stop-run")
+    assert stopper["path"].endswith("/exec-sink")
+    assert stopper["subscribes"] == ["run.cancel-requested"]
+    assert stopper["args"] == [
+        "-s", "run.cancel-requested", "-t", "30000", "--", "signalbox", "stop-run",
+    ]
+    assert "publishes" not in stopper
+    assert [s["name"] for s in SINKS if "stop-run" in s["args"]] == ["stop-run"]

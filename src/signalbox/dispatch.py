@@ -27,7 +27,7 @@ import time
 import uuid
 from pathlib import Path
 
-from signalbox.acts import read_session, record_session
+from signalbox.acts import cancel_reason, read_session, record_session
 from signalbox.diagnostics import invocation_diagnostic
 from signalbox.emit import post_provenance
 from signalbox.paths import (
@@ -76,6 +76,7 @@ CLAUDE_TOOLS = ("Read", "Grep", "Glob", "Write", "Edit", "Bash", "Skill")
 # shard_id is unique only within its plan, so it is run-scoped.
 PENDING_KEYS: dict[str, tuple[str, ...]] = {
     "approval": ("run_id",),
+    "cancel": ("run_id",),
     "pr": ("repo", "pr"),
     "shard": ("run_id", "shard_id"),
 }
@@ -330,6 +331,9 @@ def main(argv: list[str]) -> int:
         print(f"signalbox dispatch: unreadable payload: {exc}", file=sys.stderr)
         return 1
 
+    if cancel_reason(payload.get("run_id")) is not None:
+        return 0
+
     runner = args.runner or runner_for(args.skill)
     model = args.model or model_for(runner)
     worktree = worktree_for(payload)
@@ -406,6 +410,8 @@ def main(argv: list[str]) -> int:
             text=True,
             check=False,
         )
+        if cancel_reason(payload.get("run_id")) is not None:
+            return completed, invocation_env
         duration_ms = round((time.monotonic() - started) * 1000)
         post_provenance(
             args.skill.removeprefix("signalbox-"),
@@ -432,6 +438,8 @@ def main(argv: list[str]) -> int:
             )
 
     completed, invocation_env = run(resumed_session_id)
+    if cancel_reason(payload.get("run_id")) is not None:
+        return 0
     persist_session(completed)
     if (
         completed.returncode != 0
@@ -447,6 +455,8 @@ def main(argv: list[str]) -> int:
         if minted_session_id:
             payload["session_id"] = minted_session_id
         completed, invocation_env = run(None)
+        if cancel_reason(payload.get("run_id")) is not None:
+            return 0
         persist_session(completed)
     # The marker stays whatever happens; that is the point. Only a shard that
     # announced a terminal verdict clears it, and the reaper finds the rest.

@@ -17,6 +17,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -1012,6 +1013,97 @@ def clear_session(run_id: str, shard_id: str) -> bool:
     return existed
 
 
+def cancel_reason(run_id: str | None) -> str | None:
+    """Read the durable operator cancellation marker."""
+    from signalbox.dispatch import pending_path
+
+    if not run_id:
+        return None
+    try:
+        stored = json.loads(pending_path("cancel", {"run_id": run_id}).read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return str(stored.get("reason") or "operator")
+
+
+def cancel(run_id: str, reason: str = "operator") -> dict:
+    """Request cancellation through the operator control ingress."""
+    from signalbox import emit
+    from signalbox.identity import project
+
+    if cancel_reason(run_id) is not None:
+        return {"run_id": run_id, "ok": False, "error": "run already cancelled"}
+    identity = {}
+    found = worktree_for({"run_id": run_id}).exists()
+    for marker in sorted((state_dir() / "pending").glob("*.json")):
+        try:
+            stored = json.loads(marker.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(stored, dict) or stored.get("run_id") != run_id:
+            continue
+        found = True
+        if marker.name.startswith(("approval-", "shard-", "pr-")):
+            identity.update(project(stored))
+    if not found:
+        return {"run_id": run_id, "ok": False, "error": "unknown run"}
+    identity["run_id"] = run_id
+    status = emit.post({"event": "run.cancel-requested", **identity, "reason": reason},
+                       url=emit.control_url())
+    return {**identity, "ok": True, "status": status}
+
+
+def stop_run(payload: dict) -> dict:
+    """Mark cancellation before terminating processes attributed by cwd."""
+    run_id = payload["run_id"]
+    mark_pending("cancel", {"run_id": run_id, "reason": payload.get("reason") or "operator"})
+    for marker in (state_dir() / "pending").glob(f"shard-{run_id}-*.json"):
+        try:
+            stored = json.loads(marker.read_text())
+            clear_session(run_id, stored["shard_id"])
+        except (OSError, ValueError, KeyError):
+            continue
+        finally:
+            marker.unlink(missing_ok=True)
+
+    excluded = {os.getpid()}
+    pid = os.getpid()
+    while pid > 1:
+        try:
+            pid = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+        excluded.add(pid)
+    root = worktree_for(payload).resolve()
+
+    def attributed(pid: int) -> bool:
+        try:
+            return Path(f"/proc/{pid}/cwd").resolve(strict=True).is_relative_to(root)
+        except OSError:
+            return False
+
+    targets = {int(path.name) for path in Path("/proc").iterdir()
+               if path.name.isdigit() and int(path.name) not in excluded
+               and attributed(int(path.name))}
+
+    def send(pid: int, sig: int) -> None:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+
+    for pid in targets:
+        send(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 10
+    while targets and time.monotonic() < deadline:
+        targets = {pid for pid in targets if attributed(pid)}
+        if targets:
+            time.sleep(0.05)
+    for pid in targets:
+        send(pid, signal.SIGKILL)
+    return {**payload, "ok": True}
+
+
 def reap(kind: str, stale_minutes: int) -> str:
     """Pending markers older than the threshold, as one JSON line each."""
     import time
@@ -1023,9 +1115,10 @@ def reap(kind: str, stale_minutes: int) -> str:
     lines = []
     for marker in sorted(directory.glob(f"{kind}-*.json")):
         try:
-            if marker.stat().st_mtime > cutoff:
-                continue
             payload = json.loads(marker.read_text())
+            cancelled = cancel_reason(payload.get("run_id")) is not None
+            if not cancelled and marker.stat().st_mtime > cutoff:
+                continue
         except (OSError, json.JSONDecodeError):
             continue
         marker.unlink(missing_ok=True)
@@ -1034,6 +1127,8 @@ def reap(kind: str, stale_minutes: int) -> str:
                 str(payload.get("run_id", "unknown")),
                 str(payload.get("shard_id", "unknown")),
             )
+        if cancelled:
+            continue
         lines.append(
             json.dumps({**payload, "outcome": "silent", "reason": f"{kind} emitted nothing"})
         )
@@ -1199,6 +1294,8 @@ def approve(run_id: str) -> dict:
     from signalbox.dispatch import pending_path
     from signalbox.identity import project
 
+    if cancel_reason(run_id) is not None:
+        return {"run_id": run_id, "ok": False, "error": "run cancelled"}
     marker = pending_path("approval", {"run_id": run_id})
     try:
         stored = json.loads(marker.read_text())
@@ -1282,8 +1379,24 @@ def main(command: str, argv: list[str]) -> int:
             request["base_branch"] = args.base_branch
         if args.body_file:
             request["body"] = Path(args.body_file).read_text()
+        from signalbox.dispatch import pending_path
+
+        pending_path("cancel", {"run_id": run_id}).unlink(missing_ok=True)
         post(request)
         print(run_id)
+        return 0
+
+    if command == "cancel":
+        import argparse
+
+        parser = argparse.ArgumentParser(prog="signalbox cancel")
+        parser.add_argument("run_id")
+        parser.add_argument("--reason", default="operator")
+        args = parser.parse_args(argv)
+        return _out(cancel(args.run_id, args.reason))
+
+    if command == "stop-run":
+        stop_run(_payload())
         return 0
 
     if command == "approve":
@@ -1328,4 +1441,9 @@ def main(command: str, argv: list[str]) -> int:
         "check-details": check_details,
         "map-ci-findings": map_ci_findings,
     }
-    return _out(handlers[command](payload))
+    if command != "release-workspace" and cancel_reason(payload.get("run_id")) is not None:
+        return 0
+    result = handlers[command](payload)
+    if command != "release-workspace" and cancel_reason(payload.get("run_id")) is not None:
+        return 0
+    return _out(result)

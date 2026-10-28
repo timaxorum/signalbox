@@ -18,7 +18,7 @@ ACT_COMMANDS = frozenset({
     "prepare-workspace", "release-workspace", "fetch-issue", "run-suite",
     "merge-stage", "commit-fix", "push-branch", "verify-signatures",
     "open-pr", "merge-pr", "close-issue", "check-details", "map-ci-findings", "reap",
-    "mark-pending", "clear-pending", "rehydrate", "notify", "launch", "approve",
+    "mark-pending", "clear-pending", "rehydrate", "notify", "launch", "approve", "cancel", "stop-run",
     "catch-up-checks",
 })
 
