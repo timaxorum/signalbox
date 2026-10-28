@@ -7,6 +7,7 @@ agree on one worktree per run without any of them owning the answer.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -39,6 +40,11 @@ def run_tmp_dir(run_id: str) -> Path:
     CARGO_TARGET_DIR=/tmp, filled the quota-limited tmpfs, and reported false
     failures (run 448-1444885, #427, #430).
     """
+    if (not isinstance(run_id, str) or run_id in {".", ".."}
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", run_id)):
+        # release_workspace removes this tree recursively; never let a payload
+        # field name a path outside state_dir()/tmp.
+        raise ValueError(f"not a run id: {run_id!r}")
     return state_dir() / "tmp" / run_id
 
 

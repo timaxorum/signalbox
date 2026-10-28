@@ -1318,3 +1318,10 @@ def test_suite_discovery_failure_falls_back(tmp_path, monkeypatch, failure):
     assert result["suite_scope"] == "full"
     assert failure in result["fallback_reason"]
     assert result["ok"] is True
+
+
+@pytest.mark.parametrize("bad", ["..", ".", "../x", "a/b", "/abs", "", "-x"])
+def test_run_tmp_dir_refuses_a_run_id_that_is_not_one_plain_segment(bad):
+    from signalbox.paths import run_tmp_dir
+    with pytest.raises(ValueError):
+        run_tmp_dir(bad)
