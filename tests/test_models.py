@@ -933,3 +933,64 @@ def test_failed_codex_cold_start_still_records_jsonl_thread(monkeypatch, tmp_pat
 
     assert dispatch.main(["--skill", "signalbox-implement"]) == 1
     assert recorded == [("r1", "a", "codex", "thread-new")]
+
+
+@pytest.mark.parametrize("target", ["agent", "dispatch"])
+def test_cancelled_agent_or_dispatch_makes_no_model_call(tmp_path, monkeypatch, capsys, target):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    acts.mark_pending("cancel", {"run_id": "r1", "reason": "operator"})
+    module = agent if target == "agent" else dispatch
+    monkeypatch.setattr(module.sys, "stdin", SimpleNamespace(read=lambda: '{"run_id":"r1"}'))
+    monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: pytest.fail("model called"))
+    monkeypatch.setattr(dispatch, "require_skill", lambda *a: pytest.fail("skill checked"))
+    args = ["review"] if target == "agent" else ["--skill", "signalbox-implement"]
+    assert module.main(args) == 0
+    assert capsys.readouterr().out == ""
+    assert not list((tmp_path / "pending").glob("shard-*"))
+
+
+def test_agent_cancelled_during_invocation_publishes_no_provenance(tmp_path, monkeypatch, capsys):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    monkeypatch.setattr(agent, "_workdir", lambda p: str(tmp_path))
+    monkeypatch.setattr(agent.sys, "stdin", SimpleNamespace(read=lambda: '{"run_id":"r1"}'))
+    def run(*a, **k):
+        acts.mark_pending("cancel", {"run_id": "r1", "reason": "operator"})
+        return SimpleNamespace(returncode=-15, stdout="", stderr="")
+    monkeypatch.setattr(agent.subprocess, "run", run)
+    monkeypatch.setattr(agent, "post_provenance", lambda *a, **k: pytest.fail("provenance posted"))
+    assert agent.main(["review"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
+
+
+@pytest.mark.parametrize("runner", ["claude", "codex"])
+@pytest.mark.parametrize("cancel_on_call", [1, 2])
+def test_dispatch_cancelled_during_resumed_invocation_does_not_retry(
+    tmp_path, monkeypatch, capsys, runner, cancel_on_call
+):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    acts.record_session("r1", "a", runner, "stored-session")
+    monkeypatch.setattr(dispatch, "worktree_for", lambda p: tmp_path)
+    monkeypatch.setattr(dispatch, "require_skill", lambda *a: None)
+    payload = {"run_id": "r1", "shard_id": "a", "round": 2, "declared": []}
+    monkeypatch.setattr(dispatch.sys, "stdin", SimpleNamespace(read=lambda: json.dumps(payload)))
+    calls, provenance, recorded = [], [], []
+    def run(*a, **k):
+        calls.append(a)
+        if len(calls) == cancel_on_call:
+            acts.mark_pending("cancel", {"run_id": "r1", "reason": "operator"})
+            acts.clear_session("r1", "a")
+        return SimpleNamespace(returncode=-15, stdout="", stderr="")
+    monkeypatch.setattr(dispatch.subprocess, "run", run)
+    monkeypatch.setattr(dispatch, "post_provenance", lambda *a, **k: provenance.append(a))
+    monkeypatch.setattr(dispatch, "record_session", lambda *a: recorded.append(a))
+    assert dispatch.main(["--skill", "signalbox-fix", "--runner", runner]) == 0
+    assert len(calls) == cancel_on_call
+    assert len(provenance) == cancel_on_call - 1
+    assert recorded == []
+    assert acts.read_session("r1", "a") is None
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""

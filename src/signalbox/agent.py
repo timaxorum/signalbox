@@ -18,6 +18,7 @@ import sys
 import time
 from typing import NamedTuple
 
+from signalbox.acts import cancel_reason
 from signalbox.dispatch import environment
 from signalbox.diagnostics import invocation_diagnostic
 from signalbox.emit import post_provenance
@@ -391,6 +392,8 @@ def run(role: str, payload: dict, model: str | None = None) -> tuple[dict, int]:
         check=False,
         **subprocess_kwargs,
     )
+    if cancel_reason(payload.get("run_id")) is not None:
+        return {}, 0
     duration_ms = round((time.monotonic() - started) * 1000)
     diagnostic = invocation_diagnostic(completed, command)
     post_provenance(
@@ -481,11 +484,15 @@ def main(argv: list[str]) -> int:
         print(f"signalbox agent: unreadable payload: {exc}", file=sys.stderr)
         return 1
 
+    if cancel_reason(payload.get("run_id")) is not None:
+        return 0
     try:
         verdict, code = run(role, payload)
     except (VaultMissing, WorktreeMissing) as exc:
         print(f"signalbox agent: {exc}", file=sys.stderr)
         return 1
+    if cancel_reason(payload.get("run_id")) is not None:
+        return 0
     if code != 0:
         return code
     print(json.dumps(verdict))

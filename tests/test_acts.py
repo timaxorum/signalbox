@@ -1530,3 +1530,111 @@ def test_diff_detected_marker_without_runner_still_errors(tmp_path, monkeypatch)
     assert result["errored"] is True
     assert result["reason"] == "suite detected but no runner available (pyproject.toml)"
     assert len(calls) == 1
+
+
+def test_cancel_posts_identity_from_markers(tmp_path, monkeypatch):
+    from signalbox import acts, emit
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    (pending / "pr-9.json").write_text(json.dumps(
+        {"run_id": "r1", "pr": 9, "issue": 469, "junk": True}))
+    posts = []
+    monkeypatch.setattr(emit, "post", lambda body, **kw: posts.append((body, kw)) or 202)
+    assert acts.cancel("r1", "wrong base")["ok"]
+    assert posts == [({"event": "run.cancel-requested", "run_id": "r1",
+                      "pr": 9, "issue": 469, "reason": "wrong base"},
+                     {"url": emit.control_url()})]
+
+
+def test_cancel_refuses_unknown_and_already_cancelled_runs(tmp_path, monkeypatch):
+    from signalbox import acts, emit
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    monkeypatch.setattr(emit, "post", lambda *a, **k: pytest.fail("unexpected post"))
+    assert not acts.cancel("unknown")["ok"]
+    acts.mark_pending("cancel", {"run_id": "r1", "reason": "operator"})
+    assert not acts.cancel("r1")["ok"]
+    assert acts.cancel_reason(None) is None
+
+
+@pytest.mark.parametrize("during", [False, True])
+def test_a_cancelled_run_act_publishes_nothing(tmp_path, monkeypatch, capsys, during):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    payload = {"run_id": "r1"}
+    monkeypatch.setattr(acts, "_payload", lambda: payload)
+    def run(payload):
+        assert during
+        acts.mark_pending("cancel", {**payload, "reason": "operator"})
+        return {"ok": True}
+    monkeypatch.setattr(acts, "run_suite", run)
+    if not during:
+        acts.mark_pending("cancel", {**payload, "reason": "operator"})
+    assert acts.main("run-suite", []) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_approve_refuses_a_cancelled_run(tmp_path, monkeypatch):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    acts.mark_pending("approval", {"run_id": "r1"})
+    acts.mark_pending("cancel", {"run_id": "r1", "reason": "operator"})
+    assert not acts.approve("r1")["ok"]
+
+
+def test_reap_drops_a_cancelled_runs_markers(tmp_path, monkeypatch):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    acts.mark_pending("cancel", {"run_id": "r1", "reason": "operator"})
+    acts.record_session("r1", "a", "codex", "thread")
+    for kind, fields in [("shard", {"shard_id": "a"}), ("pr", {"pr": 9}),
+                         ("approval", {})]:
+        marker = acts.mark_pending(kind, {"run_id": "r1", **fields})
+        assert acts.reap(kind, 100) == ""
+        assert not marker.exists()
+    assert acts.read_session("r1", "a") is None
+
+
+def test_stop_run_terminates_processes_in_the_worktree(tmp_path, monkeypatch):
+    import subprocess
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    root = tmp_path / "worktrees/r1/nested"
+    root.mkdir(parents=True)
+    inside = subprocess.Popen(["sleep", "60"], cwd=root)
+    outside = subprocess.Popen(["sleep", "60"], cwd=tmp_path)
+    kill = acts.os.kill
+    signals = []
+    def checked_kill(pid, sig):
+        assert acts.cancel_reason("r1") == "operator"
+        signals.append(pid)
+        kill(pid, sig)
+    monkeypatch.setattr(acts.os, "kill", checked_kill)
+    acts.mark_pending("shard", {"run_id": "r1", "shard_id": "a"})
+    acts.record_session("r1", "a", "codex", "thread")
+    try:
+        acts.stop_run({"run_id": "r1"})
+        assert inside.wait(timeout=2) < 0
+        assert outside.poll() is None
+        assert inside.pid in signals and outside.pid not in signals
+        assert acts.read_session("r1", "a") is None
+        assert not list((tmp_path / "pending").glob("shard-*"))
+        assert root.exists()
+    finally:
+        for process in (inside, outside):
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+
+
+def test_launch_clears_a_stale_cancel_marker(tmp_path, monkeypatch):
+    from signalbox import acts, emit
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    marker = acts.mark_pending("cancel", {"run_id": "r1", "reason": "old"})
+    posts = []
+    def post(body):
+        assert not marker.exists()
+        posts.append(body)
+    monkeypatch.setattr(emit, "post", post)
+    assert acts.main("launch", ["469", "--run-id", "r1"]) == 0
+    assert len(posts) == 1
