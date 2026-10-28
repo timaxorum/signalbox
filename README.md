@@ -253,8 +253,8 @@ no root runner, and a non-empty diff where nothing ran set `requires_human`
 and `untested_paths` (#462). Covered suites still run and their results reach
 the gate; a clear verdict with `requires_human` waits for `signalbox approve`.
 For build or CI changes, the root suite runs when available; otherwise the
-fallback runs every package suite up to 3 directory levels deep, skipping
-`.git`, `node_modules`, `target`, `.venv` and `dist`.
+other changed paths select their suites as usual, and the build or CI files
+themselves are listed in `untested_paths`.
 `errored`, and therefore `suite.errored` and `run.halted`, is reserved for an
 uninvokable runner, a timeout or a missing worktree.
 

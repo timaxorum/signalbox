@@ -420,22 +420,17 @@ def run_suite(payload: dict) -> dict:
         root_cmd = suite_command(root)
         suites = [(root, root_cmd)]
         if build_changed and root_cmd is None:
-            suites = []
-            skipped = {".git", "node_modules", "target", ".venv", "dist"}
-            for current, directories, _ in os.walk(root):
-                directory = Path(current)
-                depth = len(directory.relative_to(root).parts)
-                directories[:] = sorted(d for d in directories if d not in skipped) if depth < 3 else []
-                cmd = suite_command(directory)
-                if cmd is not None:
-                    suites.append((directory, cmd))
-                elif any((directory / marker).exists() for marker, _ in SUITE_COMMANDS):
-                    suites.append((directory, None))
-            untested = [path for path in paths if any(
+            # The changed packages' own suites still run, selected as for any
+            # diff; the build and CI files themselves have no suite (#462).
+            built = [path for path in paths if any(
                 path == item or (item.endswith("/") and path.startswith(item))
                 for item in SUITE_BUILD_FILES)]
-            untested.extend(path for path in paths if not any(
-                (root / path).is_relative_to(directory) for directory, cmd in suites if cmd))
+            rest = [path for path in paths if path not in built]
+            try:
+                suites, unmapped = _select_suites(root, rest, run) if rest else ([], [])
+            except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired, TimeoutError):
+                suites, unmapped = [], list(rest)
+            untested = built + list(unmapped)
     runnable = []
     for directory, cmd in suites:
         if cmd is None:

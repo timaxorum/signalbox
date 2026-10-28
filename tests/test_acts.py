@@ -1466,44 +1466,42 @@ def test_mapped_suite_runs_with_untested_paths_for_approval(tmp_path, monkeypatc
     assert result["untested_paths"] == sorted(unmapped)[:20]
 
 
-def test_ci_fallback_discovers_package_suites_with_depth_and_skip_limits(tmp_path, monkeypatch):
+@pytest.mark.parametrize("changed,expected_calls,untested", [
+    # A CI file plus a package change: that package's suite runs; the CI file
+    # and a package with no test script are untested.
+    (".github/workflows/ci.yml\npkg-a/src/x.py\nscripts/tool.mjs",
+     [(["uv", "run", "pytest", "-q"], "pkg-a")],
+     [".github/workflows/ci.yml", "scripts/tool.mjs"]),
+    # A CI file alone: nothing runs, and a person decides.
+    (".github/workflows/ci.yml", [], [".github/workflows/ci.yml"]),
+])
+def test_ci_file_change_runs_changed_package_suites_only(tmp_path, monkeypatch, changed,
+                                                          expected_calls, untested):
     from signalbox import acts
 
     monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
     root = tmp_path / "worktrees/ci"
-    packages = {"pkg-a": "pyproject.toml", "pkg-b": "Cargo.toml",
-                "nested/level/pkg-c": "pyproject.toml",
-                "nested/level/deeper/pkg-d": "pyproject.toml"}
-    for skipped in (".git", "node_modules", "target", ".venv", "dist"):
-        packages[f"{skipped}/ignored"] = "pyproject.toml"
-    for directory, marker in packages.items():
-        package = root / directory
-        package.mkdir(parents=True)
-        (package / marker).write_text("")
+    for directory, marker, text in (("pkg-a", "pyproject.toml", ""),
+                                    ("pkg-b", "pyproject.toml", ""),
+                                    ("scripts", "package.json", '{"scripts":{}}')):
+        (root / directory).mkdir(parents=True)
+        (root / directory / marker).write_text(text)
     monkeypatch.setattr(acts.shutil, "which", lambda name: name)
-    elapsed = [0]
-    monkeypatch.setattr(acts.time, "monotonic", lambda: elapsed[0])
     calls = []
 
     def run(cmd, cwd=None, timeout=120):
         if cmd[:2] == ["git", "diff"]:
-            return 0, ".github/workflows/ci.yml", ""
-        calls.append((cmd, Path(cwd).relative_to(root).as_posix(), timeout))
-        elapsed[0] += 10
+            return 0, changed, ""
+        calls.append((cmd, Path(cwd).relative_to(root).as_posix()))
         return 0, "2 passed", ""
 
     monkeypatch.setattr(acts, "_run", run)
     result = acts.run_suite({"run_id": "ci", "base_sha": "base"})
-    assert calls == [
-        (["uv", "run", "pytest", "-q"], "nested/level/pkg-c", 1800),
-        (["uv", "run", "pytest", "-q"], "pkg-a", 1790),
-        (["cargo", "nextest", "run"], "pkg-b", 1780),
-    ]
-    assert result["ran"] is result["ok"] is True
-    assert result["passed"] == 6
+    assert calls == expected_calls
+    assert result["ran"] is bool(expected_calls)
     assert result["errored"] is False
     assert result["requires_human"] is True
-    assert result["untested_paths"] == [".github/workflows/ci.yml"]
+    assert result["untested_paths"] == untested
 
 
 def test_diff_detected_marker_without_runner_still_errors(tmp_path, monkeypatch):
