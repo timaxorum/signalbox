@@ -1089,6 +1089,54 @@ def test_release_of_an_absent_worktree_is_not_a_failure(tmp_path, monkeypatch):
     assert calls == []
 
 
+def test_release_build_paths_resolve_under_state_without_creating_dirs(tmp_path, monkeypatch):
+    from signalbox.paths import build_target_dir, run_tmp_dir
+
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    assert build_target_dir() == tmp_path / "target"
+    assert run_tmp_dir("sb-69") == tmp_path / "tmp" / "sb-69"
+    assert not build_target_dir().exists()
+    assert not run_tmp_dir("sb-69").exists()
+
+
+@pytest.mark.parametrize("exists", [True, False])
+def test_release_removes_run_tmp_with_or_without_worktree(tmp_path, monkeypatch, exists):
+    tmp = tmp_path / "tmp" / "sb-69"
+    nested = tmp / "nested"
+    nested.mkdir(parents=True)
+    (nested / "build-output").write_text("temporary build output")
+    other_run = tmp_path / "tmp" / "other-run"
+    other_run.mkdir()
+    responses = [
+        (0, "/home/u/code/proj/.git", ""),
+        (0, "", ""),
+        (0, "", ""),
+    ] if exists else []
+
+    result, calls = _release(tmp_path, monkeypatch, responses, exists=exists)
+
+    assert result["ok"] is True
+    assert result["released"] is exists
+    assert not tmp.exists()
+    assert other_run.is_dir()
+    assert len(calls) == (3 if exists else 0)
+
+
+@pytest.mark.parametrize("exists", [True, False])
+def test_release_missing_run_tmp_is_not_an_error(tmp_path, monkeypatch, exists):
+    responses = [
+        (0, "/home/u/code/proj/.git", ""),
+        (0, "", ""),
+        (0, "", ""),
+    ] if exists else []
+
+    result, _ = _release(tmp_path, monkeypatch, responses, exists=exists)
+
+    assert result["ok"] is True
+    assert result["released"] is exists
+    assert not (tmp_path / "tmp" / "sb-69").exists()
+
+
 def test_a_worktree_that_will_not_be_removed_is_a_refusal(tmp_path, monkeypatch):
     result, _ = _release(tmp_path, monkeypatch, [
         (0, "/home/u/code/proj/.git", ""),

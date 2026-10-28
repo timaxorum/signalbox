@@ -22,6 +22,26 @@ def state_dir() -> Path:
     return Path(root)
 
 
+def build_target_dir() -> Path:
+    """Shared build cache under the state directory.
+
+    #451: agents could not write the shared cargo target dir, fell back to
+    CARGO_TARGET_DIR=/tmp, filled the quota-limited tmpfs, and reported false
+    failures (run 448-1444885, #427, #430).
+    """
+    return state_dir() / "target"
+
+
+def run_tmp_dir(run_id: str) -> Path:
+    """One run's temporary directory, returned without creating it.
+
+    #451: agents could not write the shared cargo target dir, fell back to
+    CARGO_TARGET_DIR=/tmp, filled the quota-limited tmpfs, and reported false
+    failures (run 448-1444885, #427, #430).
+    """
+    return state_dir() / "tmp" / run_id
+
+
 def sessions_dir(run_id: str) -> Path:
     """One run's shard sessions, kept outside the pending reaper's namespace."""
     return state_dir() / "sessions" / run_id
