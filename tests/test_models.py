@@ -7,6 +7,7 @@ accident.
 
 from __future__ import annotations
 
+import os
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -385,7 +386,11 @@ def test_non_notes_roles_receive_neither_vault_access_nor_a_stamped_env(
     assert code == 0
     command, kwargs = calls[0]
     assert "--add-dir" not in command
-    assert "env" not in kwargs
+    # #473: every runner gets an env, but the only stamps on it are the
+    # pinned-pnpm shim's: nothing vault-related differs from the inheritance.
+    env = kwargs.get("env", dict(os.environ))
+    changed = {k for k in set(env) | set(os.environ) if env.get(k) != os.environ.get(k)}
+    assert changed <= {"PATH", "npm_config_store_dir"}
 
 
 def test_plan_verdict_keeps_model_authored_stages_at_agent_seam(monkeypatch):

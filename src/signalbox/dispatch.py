@@ -39,6 +39,8 @@ from signalbox.paths import (
     worktree_for,
 )
 
+from signalbox.toolchain import with_pinned_pnpm
+
 # Which CLI performs each acting skill. Implementation and fix run on codex;
 # the judging roles in agent.py run on Claude. Both are just processes that
 # announce through the control endpoint, so this is a swap, not a fork in the
@@ -400,6 +402,8 @@ def main(argv: list[str]) -> int:
         command, stdin_text = invocation(resume_id)
         invocation_env = environment(payload, dict(os.environ))
         invocation_env.update(CARGO_TARGET_DIR=str(target), TMPDIR=str(tmp))
+        # #473: shard agents use the same pin as dependency preparation.
+        invocation_env = with_pinned_pnpm(invocation_env, Path(worktree), state_dir())
         started = time.monotonic()
         completed = subprocess.run(
             command,

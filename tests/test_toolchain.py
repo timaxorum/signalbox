@@ -1,4 +1,4 @@
-"""Pinned pnpm preparation and suites, without network access."""
+"""Pinned pnpm preparation and suites, with an opt-in network check (#473)."""
 
 import json
 import os
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from signalbox import acts
-from signalbox.toolchain import install_env, install_only_env, pnpm_argv, pnpm_packages, pnpm_version
+from signalbox.toolchain import install_env, install_only_env, pnpm_argv, pnpm_packages, pnpm_version, pnpm_shim_dir, with_pinned_pnpm
 
 
 def git(root, *args):
@@ -147,6 +147,7 @@ def test_run_suite_uses_pinned_pnpm(tmp_path, monkeypatch, diff):
     monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
     root = tmp_path / "worktrees/suite"
     directory = root / "client" if diff else root
+    package(root)
     package(directory)
     monkeypatch.setattr(acts.shutil, "which", lambda name: name if name == "npx" else None)
     assert acts.suite_command(directory) == ["npx", "-y", "pnpm@10.31.0", "test"]
@@ -166,6 +167,7 @@ def test_run_suite_uses_pinned_pnpm(tmp_path, monkeypatch, diff):
     assert cmd == ["npx", "-y", "pnpm@10.31.0", "test"]
     assert kwargs["cwd"] == str(directory)
     assert kwargs["env"]["CI"] == "true"
+    assert kwargs["env"]["PATH"].split(os.pathsep)[0] == str(tmp_path / "shims/pnpm-10.31.0")
     assert kwargs["env"]["npm_config_store_dir"] == str(tmp_path / "pnpm-store")
     monkeypatch.setattr(acts.shutil, "which", lambda name: name if name == "npm" else None)
     assert acts.suite_command(directory) == ["npm", "test"]
@@ -191,3 +193,51 @@ def test_prepare_budget_covers_the_installs():
     prepare = next(h for h in config["handlers"] if h["name"] == "prepare-workspace")
     budget_ms = int(prepare["args"][prepare["args"].index("-t") + 1])
     assert budget_ms >= 5 * INSTALL_TIMEOUT * 1000
+
+
+def test_the_shim_runs_the_pinned_pnpm(tmp_path):
+    package(tmp_path / "repo")
+    directory = pnpm_shim_dir(tmp_path / "repo", tmp_path / "state")
+    assert directory == tmp_path / "state/shims/pnpm-10.31.0"
+    shim = directory / "pnpm"
+    content = '#!/bin/sh\nexec npx -y "pnpm@10.31.0" "$@"\n'
+    assert shim.read_text() == content
+    assert shim.stat().st_mode & 0o777 == 0o755
+    before = shim.stat()
+    assert pnpm_shim_dir(tmp_path / "repo", tmp_path / "state") == directory
+    assert shim.read_text() == content
+    assert (shim.stat().st_mtime_ns, shim.stat().st_ino) == (before.st_mtime_ns, before.st_ino)
+
+
+def test_an_unpinned_repo_gets_no_shim(tmp_path):
+    package(tmp_path / "repo", manager="npm@10.31.0")
+    env = {"PATH": "/original", "OTHER": "preserved"}
+    assert pnpm_shim_dir(tmp_path / "repo", tmp_path / "state") is None
+    result = with_pinned_pnpm(env, tmp_path / "repo", tmp_path / "state")
+    assert result == env
+    assert result is not env
+    assert not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize("path", [None, "", "/original/bin:/other/bin"])
+def test_the_shim_is_first_on_path(tmp_path, path):
+    package(tmp_path / "repo")
+    env = {"OTHER": "preserved", **({"PATH": path} if path is not None else {})}
+    before = dict(env)
+    result = with_pinned_pnpm(env, tmp_path / "repo", tmp_path / "state")
+    directory = str(tmp_path / "state/shims/pnpm-10.31.0")
+    assert result["PATH"] == directory + (os.pathsep + path if path is not None else "")
+    assert result["npm_config_store_dir"] == str(tmp_path / "state/pnpm-store")
+    assert result["OTHER"] == "preserved"
+    assert env == before
+
+
+@pytest.mark.network
+@pytest.mark.skipif(os.environ.get("SIGNALBOX_NETWORK_TESTS") != "1",
+                    reason="set SIGNALBOX_NETWORK_TESTS=1 to fetch pinned pnpm")
+def test_running_the_shim_reaches_the_pinned_version(tmp_path):
+    package(tmp_path / "repo")
+    directory = pnpm_shim_dir(tmp_path / "repo", tmp_path / "state")
+    completed = subprocess.run([str(directory / "pnpm"), "--version"],
+                               capture_output=True, text=True, check=True, timeout=120)
+    assert completed.stdout.strip() == "10.31.0"

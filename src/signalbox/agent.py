@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import NamedTuple
 
 from signalbox.acts import cancel_reason
@@ -30,9 +31,12 @@ from signalbox.paths import (
     recall_vault_dir,
     require_worktree,
     run_tmp_dir,
+    state_dir,
     vault_dir,
     vault_has_notes,
 )
+
+from signalbox.toolchain import with_pinned_pnpm
 
 # Each role is a skill, so the procedure is versioned and reviewable on its own
 # rather than living in an argv string.
@@ -368,6 +372,11 @@ def run(role: str, payload: dict, model: str | None = None) -> tuple[dict, int]:
             "TMPDIR": str(tmp),
         }
 
+    # #473: every runner and role resolves bare pnpm to the repository pin.
+    subprocess_kwargs["env"] = with_pinned_pnpm(
+        subprocess_kwargs.get("env", dict(os.environ)), Path(workdir), state_dir()
+    )
+
     if runner == "codex":
         command = codex_command(workdir, invoked_model)
         stdin_text = codex_prompt_for(role, payload)
@@ -404,7 +413,7 @@ def run(role: str, payload: dict, model: str | None = None) -> tuple[dict, int]:
         completed.returncode == 0,
         duration_ms,
         diagnostic,
-        env=environment(payload, dict(os.environ)),
+        env=with_pinned_pnpm(environment(payload, dict(os.environ)), Path(workdir), state_dir()),
     )
     if completed.returncode != 0:
         detail = diagnostic.get("stderr") or "runner produced no stderr"

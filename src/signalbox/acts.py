@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 
 from signalbox.toolchain import (
-    INSTALL_ARGS, INSTALL_TIMEOUT, install_env, install_only_env, pnpm_argv, pnpm_packages,
+    INSTALL_ARGS, INSTALL_TIMEOUT, install_env, install_only_env, pnpm_argv, pnpm_packages, with_pinned_pnpm,
 )
 
 from signalbox.paths import (
@@ -506,7 +506,8 @@ def run_suite(payload: dict) -> dict:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("suite handler budget exhausted")
-        return _run(cmd, cwd=str(directory), timeout=remaining, env=install_env(state_dir()))
+        return _run(cmd, cwd=str(directory), timeout=remaining,
+                    env=with_pinned_pnpm(install_env(state_dir()), root, state_dir()))
 
     try:
         root = require_worktree(payload)
