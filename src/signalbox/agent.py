@@ -443,6 +443,14 @@ def run(role: str, payload: dict, model: str | None = None) -> tuple[dict, int]:
     # the envelope seam; feedback and prior verdict fields must not leak into
     # the next event merely because the role-aware merge inspected them.
     result = {**verdict, **project(merged.payload)}
+    if role == "assess":
+        # #462: suite scope is authoritative; the model requests a human via
+        # decision=needs_human, never by supplying or clearing suite flags.
+        for key in ("requires_human", "untested_paths"):
+            if key in payload:
+                result[key] = payload[key]
+            else:
+                result.pop(key, None)
     if merged.envelope_overridden:
         result["identity_overridden"] = merged.envelope_overridden
     if merged.product_overridden:

@@ -1,4 +1,4 @@
-"""The notes act owns the empty-vault verdict and preserves failures (#452)."""
+"""Role-specific verdict handling preserves authoritative act observations."""
 
 import io
 import json
@@ -31,6 +31,31 @@ def notes_agent(monkeypatch, tmp_path):
         lambda *args, **kwargs: posted.append((args, kwargs)),
     )
     return SimpleNamespace(vault=vault, calls=calls, posted=posted, completed=completed)
+
+
+@pytest.mark.parametrize(
+    "suite_scope",
+    [
+        {"requires_human": True, "untested_paths": [".github/workflows/ci.yml"]},
+        {"requires_human": False, "untested_paths": []},
+        {"requires_human": True},
+        {"untested_paths": ["pkg/uncovered.py"]},
+        {},
+    ],
+)
+def test_assess_preserves_only_inbound_suite_scope(notes_agent, suite_scope):
+    """#462: models cannot clear, replace, or invent suite scope observations."""
+    notes_agent.completed.stdout = json.dumps(
+        {"decision": "clear", "requires_human": False, "untested_paths": ["invented"]}
+    )
+    payload = {"run_id": "r462", "ran": True, "ok": True, **suite_scope}
+
+    verdict, code = agent.run("assess", payload)
+
+    assert code == 0
+    assert verdict == {"run_id": "r462", "decision": "clear", **suite_scope}
+    assert len(notes_agent.calls) == 1
+    assert len(notes_agent.posted) == 1
 
 
 @pytest.mark.parametrize("dotdir", [False, True])

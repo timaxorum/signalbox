@@ -901,8 +901,9 @@ publishes = ["branch.rebase-invalid-verdict"]
 #
 # A red suite is evidence for the promotion gate, not an invocation error:
 # ok: false must still become suite.ran so assess can turn it into block. Only
-# errored says the detected suite could not be invoked and belongs on the
-# terminal human path.
+# errored is reserved for an uninvokable runner, a timeout or a missing
+# worktree (#462), and belongs on the terminal human path. Untested changed
+# paths reach assess with requires_human and untested_paths.
 [[handlers]]
 name = "run-suite"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
@@ -931,7 +932,7 @@ publishes = ["suite.errored"]
 name = "route-suite-error-halted"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "suite.errored", "--publish-as", "run.halted", "--",
-        "jq", "-c", '. + {reason: "the detected suite could not be invoked"}']
+        "jq", "-c", '. + {reason: "suite runner could not be invoked, timed out, or worktree is missing"}']
 subscribes = ["suite.errored"]
 publishes = ["run.halted"]
 
@@ -958,7 +959,7 @@ publishes = ["run.halted"]
 name = "route-gate-auto"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "gate.assessed", "--publish-as", "gate.cleared", "--",
-        "jq", "-c", 'select(.decision == "clear")']
+        "jq", "-c", 'select(.decision == "clear" and .requires_human != true)']
 subscribes = ["gate.assessed"]
 publishes = ["gate.cleared"]
 
@@ -966,7 +967,7 @@ publishes = ["gate.cleared"]
 name = "route-gate-human"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "gate.assessed", "--publish-as", "approval.requested", "--",
-        "jq", "-c", 'select(.decision == "needs_human")']
+        "jq", "-c", 'select(.decision == "needs_human" or (.decision == "clear" and .requires_human == true)) | if .decision == "clear" then . + {reason: "untested paths: \(.untested_paths // [] | join(", "))"} else . end']
 subscribes = ["gate.assessed"]
 publishes = ["approval.requested"]
 
