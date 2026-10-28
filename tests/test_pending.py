@@ -66,7 +66,7 @@ def test_a_pr_webhook_round_trip_uses_the_pr_marker(tmp_path, monkeypatch):
     }
 
     marker = mark_pending("pr", payload)
-    assert marker.name == "pr-57.json"
+    assert marker.name == "pr-rrrodzilla__signalbox-57.json"
     old_mtime = marker.stat().st_mtime - 3600
     os.utime(marker, (old_mtime, old_mtime))
 
@@ -261,10 +261,8 @@ def test_present_null_identity_is_absent_from_the_agent_environment():
 
 # ── concurrency: a marker must name exactly one thing ────────────────────────
 
-# Kinds whose key is assigned by something outside signalbox and is already
-# unique across every run. A GitHub PR number is the only one today. Everything
-# else is plan-local and must be run-scoped.
-GLOBALLY_UNIQUE_KINDS = {"pr"}
+# PR numbers are repository-scoped rather than globally unique (#467).
+GLOBALLY_UNIQUE_KINDS = set()
 
 
 def test_every_pending_kind_is_globally_addressable():
@@ -273,13 +271,16 @@ def test_every_pending_kind_is_globally_addressable():
     Two different waits that render to one filename destroy each other: the
     second overwrites the first, and whichever clears it first leaves the other
     silent with no marker left for the reaper to find. `shard_id` is unique only
-    within a plan, so a shard marker is run-scoped; `pr` is GitHub's and is not.
+    within a plan, so a shard marker is run-scoped; PRs are repo-scoped (#467).
     A new kind fails here unless it makes that choice deliberately.
     """
     from signalbox.dispatch import PENDING_KEYS
 
     for kind, keys in PENDING_KEYS.items():
         assert isinstance(keys, tuple) and keys, f"{kind} names no key"
+        if kind == "pr":
+            assert keys == ("repo", "pr")
+            continue
         if kind in GLOBALLY_UNIQUE_KINDS:
             continue
         assert "run_id" in keys, (
@@ -288,14 +289,11 @@ def test_every_pending_kind_is_globally_addressable():
         )
 
 
-def test_the_pr_marker_stays_unscoped_because_github_assigns_it(tmp_path, monkeypatch):
-    """Run-scoping the PR marker would break the path that clears it.
-
-    The check-suite webhook recovers run_id by string-trimming the head branch,
-    while `pr` arrives as a guaranteed field. Keying on the derived value risks
-    a marker that is written under one name and looked for under another, which
-    is a false `checks.silent` on a run whose CI actually reported.
-    """
+def test_the_pr_marker_is_scoped_by_code_repo(tmp_path, monkeypatch):
+    """#467: webhook identity addresses the code repo without needing a run id."""
     monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
-    assert pending_path("pr", {"pr": 94, "run_id": "sb-59"}).name == "pr-94.json"
-    assert pending_path("pr", {"pr": 94}).name == "pr-94.json"
+    payload = {"pr": 94, "repo": "issues/tracker", "code_repo": "acme/widget"}
+    assert pending_path("pr", {**payload, "run_id": "sb-59"}).name == "pr-acme__widget-94.json"
+    assert pending_path("pr", {"pr": 94, "code_repo": "acme/widget"}).name == "pr-acme__widget-94.json"
+    assert pending_path("pr", {"pr": 94, "repo": "acme/widget", "code_repo": None}).name == "pr-acme__widget-94.json"
+    assert pending_path("pr", {"pr": 94}).name == "pr-unknown-94.json"

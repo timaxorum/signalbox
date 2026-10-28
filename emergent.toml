@@ -178,8 +178,8 @@ publishes = ["checks.observed"]
 
 # A webhook knows about a commit, not about a run. It cannot carry `issue` or
 # `base_sha`, which the notes stage downstream of pr.merged needs, so identity is
-# restored from the marker `pr.opened` wrote rather than reconstructed. Clearing
-# that marker is the same act: a suite that concluded is not a silent one.
+# restored from the marker `pr.opened` wrote, keyed by code repo and PR number
+# (#467). Rehydrating refreshes the marker for any later suite.
 #
 # This -e edge is deliberate. Rehydrate raises PendingMissing when this engine
 # holds no marker for the delivery, a real non-zero exit rather than a refusal;
@@ -576,6 +576,7 @@ subscribes = ["fix.opened"]
 # The wait for CI, made observable. Written when the PR opens and read back by
 # `rehydrate` when a suite concludes; if no suite ever concludes, `reap-prs` finds
 # this and publishes `checks.silent` instead of the run hanging with no event.
+# The marker is keyed by code repo and PR number (#467).
 [[sinks]]
 name = "mark-pr-pending"
 path = "~/.local/share/emergent/primitives/bin/exec-sink"

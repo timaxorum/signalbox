@@ -71,22 +71,46 @@ CLAUDE_TOOLS = ("Read", "Grep", "Glob", "Write", "Edit", "Bash", "Skill")
 # render to one filename: the second overwrites the first, and clearing it
 # clears both — leaving one of them silent with nothing left to reap it.
 #
-# `pr` is a GitHub-assigned number and is unique on its own. `shard_id` is
-# unique only within its plan, so it is run-scoped. `test_every_pending_kind_is
-# _globally_addressable` holds the line as kinds are added.
+# PR numbers are per repository (#467). The repo part uses the code repo
+# (code_repo, falling back to repo), preserving the issue repo identity (#434).
+# shard_id is unique only within its plan, so it is run-scoped.
 PENDING_KEYS: dict[str, tuple[str, ...]] = {
     "approval": ("run_id",),
-    "pr": ("pr",),
+    "pr": ("repo", "pr"),
     "shard": ("run_id", "shard_id"),
 }
 
 
+def _pending_repo(payload: dict):
+    return payload.get("code_repo") if payload.get("code_repo") is not None else payload.get("repo")
+
+
 def pending_path(kind: str, payload: dict) -> Path:
-    key = "-".join(
-        "unknown" if payload.get(field) is None else str(payload[field])
-        for field in PENDING_KEYS[kind]
-    )
+    parts = []
+    for field in PENDING_KEYS[kind]:
+        value = _pending_repo(payload) if kind == "pr" and field == "repo" else payload.get(field)
+        part = "unknown" if value is None else str(value)
+        parts.append(part.replace("/", "__") if kind == "pr" and field == "repo" else part)
+    key = "-".join(parts)
     return state_dir() / "pending" / f"{kind}-{key}.json"
+
+
+def pending_read_path(kind: str, payload: dict) -> Path:
+    """Prefer scoped markers; read compatible legacy PR markers only (#467)."""
+    marker = pending_path(kind, payload)
+    if marker.exists() or kind != "pr":
+        return marker
+    number = "unknown" if payload.get("pr") is None else str(payload["pr"])
+    legacy = marker.parent / f"pr-{number}.json"
+    try:
+        stored = json.loads(legacy.read_text())
+    except (OSError, ValueError):
+        return marker
+    # Pre-change cross-repo markers hold only the issue repo (#434), so they
+    # cannot match the requested code repo and are treated as absent (#467).
+    if isinstance(stored, dict) and _pending_repo(stored) == _pending_repo(payload):
+        return legacy
+    return marker
 
 
 def environment(payload: dict, base: dict[str, str]) -> dict[str, str]:
