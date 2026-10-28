@@ -95,7 +95,7 @@ def test_skill_exists_with_frontmatter(skill: str):
         ("signalbox-assess", ("clear", "needs_human", "block")),
         ("signalbox-remediate", ("halt", "retry", "resume")),
         ("signalbox-audit-plan", ("approved", "changes_requested")),
-        ("signalbox-plan-notes", ("reviewed", "blocked")),
+        ("signalbox-plan-notes", ("reviewed", "blocked", "empty-vault")),
     ],
 )
 def test_judging_skill_states_the_exact_vocabulary_its_routers_match(skill, vocabulary):

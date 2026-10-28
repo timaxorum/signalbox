@@ -1375,14 +1375,14 @@ args = ["-s", "notes.plan-failed", "--publish-as", "run.halted", "--",
 subscribes = ["notes.plan-failed"]
 publishes = ["run.halted"]
 
-# A usable notes plan either names work directly or carries evidence that the
-# planner read the vault and found nothing stale. These two literal complements
+# A usable notes plan names work, evidences a reviewed vault, or reports the
+# act's empty-vault result. These two literal complements
 # make malformed, blocked, and unevidenced empty plans impossible to drop.
 [[handlers]]
 name = "route-notes-plan-accepted"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "notes.planned", "--publish-as", "notes.plan-accepted", "--",
-        "jq", "-c", 'select(((.notes | type) == "array" and (.notes | length) > 0) or ((.notes | type) == "array" and .outcome == "reviewed" and (.considered | type) == "array" and (.considered | length) > 0))']
+        "jq", "-c", 'select(((.notes | type) == "array" and (.notes | length) > 0) or ((.notes | type) == "array" and .outcome == "reviewed" and (.considered | type) == "array" and (.considered | length) > 0) or ((.notes | type) == "array" and (.notes | length) == 0 and .outcome == "empty-vault"))']
 subscribes = ["notes.planned"]
 publishes = ["notes.plan-accepted"]
 
@@ -1390,7 +1390,7 @@ publishes = ["notes.plan-accepted"]
 name = "route-notes-plan-invalid"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "notes.planned", "--publish-as", "notes.invalid-verdict", "--",
-        "jq", "-c", 'select((((.notes | type) == "array" and (.notes | length) > 0) or ((.notes | type) == "array" and .outcome == "reviewed" and (.considered | type) == "array" and (.considered | length) > 0)) | not) | . + {stranded_topic: "notes.invalid-verdict"}']
+        "jq", "-c", 'select((((.notes | type) == "array" and (.notes | length) > 0) or ((.notes | type) == "array" and .outcome == "reviewed" and (.considered | type) == "array" and (.considered | length) > 0) or ((.notes | type) == "array" and (.notes | length) == 0 and .outcome == "empty-vault")) | not) | . + {stranded_topic: "notes.invalid-verdict"}']
 subscribes = ["notes.planned"]
 publishes = ["notes.invalid-verdict"]
 

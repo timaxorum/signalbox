@@ -96,6 +96,18 @@ def vault_dir() -> Path:
     return path
 
 
+def vault_has_notes(path: Path) -> bool:
+    """Find a note recursively, propagating enumeration errors (#452)."""
+    with os.scandir(path) as entries:
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                if vault_has_notes(Path(entry.path)):
+                    return True
+            elif entry.name.endswith(".md") and entry.is_file():
+                return True
+    return False
+
+
 def recall_vault_dir() -> Path | None:
     """A readable, non-empty vault for recall, or no material to recall.
 

@@ -338,10 +338,11 @@ def test_the_claude_runner_still_names_the_skill():
 
 @pytest.mark.parametrize("role", ["plan-notes", "write-note"])
 def test_notes_roles_receive_the_resolved_vault(monkeypatch, tmp_path, role):
-    """Incident #70: notes must escape the disposable judging worktree."""
+    """Incidents #70 and #452: a populated vault reaches the judging model."""
     calls = []
     vault = tmp_path / "vault"
     vault.mkdir()
+    (vault / "existing.md").write_text("Existing note")
     monkeypatch.setenv("SIGNALBOX_VAULT", str(vault))
     monkeypatch.setattr(agent, "_workdir", lambda payload: "/tmp/wt")
     monkeypatch.setattr(
