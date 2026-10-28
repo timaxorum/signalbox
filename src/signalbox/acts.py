@@ -56,6 +56,18 @@ def _out(payload: dict) -> int:
 # ── workspace ────────────────────────────────────────────────────────────────
 
 
+def _enable_worktree_signing(root: Path) -> str | None:
+    # #449, AxorumHQ/internal#444: persist signing for agents' git commands
+    # without changing commit.gpgsign in the shared linked-worktree config.
+    # gpg.format and user.signingkey stay inherited from the operator.
+    for args in (["config", "extensions.worktreeConfig", "true"],
+                 ["config", "--worktree", "commit.gpgsign", "true"]):
+        code, _, err = _run(["git", *args], cwd=str(root))
+        if code:
+            return err or "cannot enable worktree commit signing"
+    return None
+
+
 def prepare_workspace(payload: dict) -> dict:
     """One worktree per run, branched from the base sha the launch pinned.
 
@@ -97,6 +109,9 @@ def prepare_workspace(payload: dict) -> dict:
                 return {**payload, "ok": False,
                         "error": err or "cannot recover the existing worktree base"}
         resolved = {"base_branch": base_branch, "base_sha": base_sha}
+        error = _enable_worktree_signing(root)
+        if error:
+            return {**payload, "ok": False, "error": error}
         install_skills(root)
         return {**payload, **resolved, "ok": True, "worktree": str(root), "branch": branch}
 
@@ -119,6 +134,9 @@ def prepare_workspace(payload: dict) -> dict:
     )
     if code != 0:
         return {**payload, "ok": False, "error": err}
+    error = _enable_worktree_signing(root)
+    if error:
+        return {**payload, "ok": False, "error": error}
     code, head, err = _run(["git", "rev-parse", "HEAD"], cwd=str(root))
     if code != 0 or head != base_sha:
         return {**payload, **resolved, "ok": False, "worktree": str(root),
@@ -364,6 +382,57 @@ def _select_suites(root, paths, run):
                 cmd += ["-p", package]
         suites.append((directory, cmd))
     return suites, unmapped
+
+
+def verify_signatures(payload: dict) -> dict:
+    """Restore signatures lost during rebase without requiring trust config."""
+    root = None
+    base = f"origin/{payload.get('base_branch', 'main')}"
+
+    def unsigned_commits() -> list[str]:
+        code, out, err = _run(["git", "rev-list", f"{base}..HEAD"], cwd=str(root))
+        if code:
+            raise ValueError(err or "cannot list run commits")
+        unsigned = []
+        for sha in out.splitlines():
+            code, commit, err = _run(["git", "cat-file", "-p", sha], cwd=str(root))
+            if code:
+                raise ValueError(err or f"cannot read commit {sha}")
+            headers = commit.split("\n\n", 1)[0].splitlines()
+            if not any(line.startswith("gpgsig ") for line in headers):
+                unsigned.append(sha)
+        return unsigned
+
+    try:
+        root = require_worktree(payload)
+        unsigned = unsigned_commits()
+        if unsigned:
+            code, _, err = _run(
+                ["git", "rebase", "--exec", "git commit --amend --no-edit -S", base],
+                cwd=str(root), timeout=840,
+            )
+            if code:
+                raise ValueError(err or "commit re-signing failed")
+            if unsigned_commits():
+                raise ValueError("unsigned commit after re-signing")
+        return {**payload, "ok": True, "resigned_shas": unsigned}
+    except (WorktreeMissing, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        error = str(exc)
+        if root is not None:
+            try:
+                for name in ("rebase-merge", "rebase-apply"):
+                    code, path, _ = _run(
+                        ["git", "rev-parse", "--git-path", name], cwd=str(root),
+                    )
+                    if code == 0 and (root / path).is_dir():
+                        code, _, err = _run(["git", "rebase", "--abort"], cwd=str(root))
+                        if code:
+                            error += f"; rebase abort failed: {err}"
+                        break
+            except (OSError, subprocess.TimeoutExpired) as cleanup_error:
+                error += f"; rebase cleanup failed: {cleanup_error}"
+        return {**payload, "ok": False, "reason": "unsigned commit after rebase",
+                "error": error}
 
 
 def run_suite(payload: dict) -> dict:
@@ -1120,6 +1189,7 @@ def main(command: str, argv: list[str]) -> int:
         "release-workspace": release_workspace,
         "fetch-issue": fetch_issue,
         "run-suite": run_suite,
+        "verify-signatures": verify_signatures,
         "merge-stage": merge_stage,
         "commit-fix": commit_fix,
         "push-branch": push_branch,
