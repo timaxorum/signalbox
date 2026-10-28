@@ -108,6 +108,7 @@ def test_judging_skill_states_the_exact_vocabulary_its_routers_match(skill, voca
 def test_assess_skill_matches_the_suite_outcome_contract():
     """The assessor must gate red/no-suite cases without claiming suite errors."""
     body = (SKILLS / "signalbox-assess" / "SKILL.md").read_text()
+    prose = " ".join(body.split())
 
     for state in (
         "`ran: true`, `ok: true`, `failed: 0`",
@@ -124,6 +125,23 @@ def test_assess_skill_matches_the_suite_outcome_contract():
         assert f"`{verdict}`" in body
     for evidence_field in ("`command`", "`exit_code`", "`passed`", "`failed`"):
         assert evidence_field in body
+    assert (
+        "A non-empty diff where nothing ran reports `ran: false` with "
+        "`requires_human: true` and `untested_paths` and reaches the assessor; "
+        "choose `needs_human` because the suite did not run."
+    ) in prose
+    assert (
+        "Only an uninvokable runner, a timeout, or a missing worktree reports "
+        "`errored: true`; routing sends `suite.errored` to `run.halted`, and "
+        "that payload never reaches the assessor."
+    ) in prose
+    assert (
+        "A `clear` verdict with `requires_human: true` routes to "
+        "`approval.requested` rather than `gate.cleared`."
+    ) in prose
+    assert (
+        "Do not clear or override `requires_human`; the suite's flag is authoritative."
+    ) in prose
 
 
 def test_assess_skill_reports_suite_scope_without_changing_decision_rules():
@@ -136,6 +154,8 @@ def test_assess_skill_reports_suite_scope_without_changing_decision_rules():
         "`root`",
         "`fallback_reason`",
         "`changed_paths_unmapped`",
+        "`requires_human`",
+        "`untested_paths`",
     ):
         assert evidence_field in body
     assert "report each entry's `root`, `command`, `exit_code`, `passed`, and `failed`" in prose
@@ -147,14 +167,25 @@ def test_assess_skill_reports_suite_scope_without_changing_decision_rules():
         "with a reason and means `needs_human`, never a pass"
     ) in prose
     assert (
-        "A non-empty diff that no suite covers reports `errored: true` with reason "
-        "`no suite covers the change` and never reaches the assessor"
+        "When a root runner also ran, `changed_paths_unmapped` lists paths only "
+        "that root suite covered; weigh them as usual."
     ) in prose
     assert (
-        "When no suite covers a changed path, the mapped suites still run, but the "
-        "payload is `errored: true` and never reaches the assessor: an untested path "
-        "always goes to a human."
+        "When no suite covers a changed path, the mapped suites still run, and the "
+        "payload carries `requires_human: true` and `untested_paths` and reaches "
+        "the assessor."
     ) in prose
+    assert (
+        "Build or CI files are included in `untested_paths` when the repository "
+        "root has no runner."
+    ) in prose
+    assert (
+        "If the payload carries `requires_human` or `untested_paths`, include their "
+        "values so the evidence records the suite's approval requirement and "
+        "uncovered changed paths."
+    ) in prose
+    assert "`no suite covers the change`" not in body
+    assert "the payload is `errored: true`" not in prose
 
 
 def test_remediate_skill_names_only_the_wired_resume_topic():

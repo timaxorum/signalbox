@@ -270,8 +270,10 @@ def suite_command(root: Path) -> list[str] | None:
     not installed anywhere, so detection once reported "no suite detected"
     against its own checkout. `run_suite` now distinguishes that condition from
     a repository with no suite: a marker with no reachable runner publishes
-    `errored: true` for the topology's human-facing error route, while no marker
-    publishes `ran: false, errored: false` for the assessor's human checkpoint.
+    `errored: true`. Changed paths no suite covers publish `requires_human: true`
+    and sorted `untested_paths` (at most 20), even when other suites ran (#462).
+    A non-empty diff with no suite publishes `ran: false` and requires human
+    approval; an empty diff retains the ordinary no-suite behavior.
     """
     for marker, candidates in SUITE_COMMANDS:
         if not (root / marker).exists():
@@ -450,11 +452,12 @@ def run_suite(payload: dict) -> dict:
     try:
         root = require_worktree(payload)
     except WorktreeMissing as exc:
-        return {**result, "reason": str(exc)}
+        return {**result, "errored": True, "reason": str(exc)}
     paths = None
+    build_changed = False
     # Changed paths that no suite that runs here covers. The mapped suites
-    # still run so a person sees real results, but the run goes to a person:
-    # an untested path is never cleared on the assessor's judgment (#450).
+    # still run and report their results. requires_human and sorted, capped
+    # untested_paths send even a clear assessment to approval (#462).
     untested: list[str] = []
     try:
         # Rebase runs first: using its target excludes upstream commits that
@@ -470,6 +473,7 @@ def run_suite(payload: dict) -> dict:
             raise ValueError("empty diff")
         if any(path == item or (item.endswith("/") and path.startswith(item))
                for path in paths for item in SUITE_BUILD_FILES):
+            build_changed = True
             raise ValueError("root build or CI file changed")
         suites, unmapped = _select_suites(root, paths, run)
         if unmapped:
@@ -479,20 +483,43 @@ def run_suite(payload: dict) -> dict:
                 suites.append((root, root_cmd))
             if root_cmd is None:
                 untested = list(unmapped)
-            if not suites:
-                return {**result, "errored": True, "reason": "no suite covers the change"}
         result["suite_scope"] = "diff"
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired, TimeoutError) as exc:
         result["fallback_reason"] = str(exc)
-        suites = [(root, suite_command(root))]
+        root_cmd = suite_command(root)
+        suites = [(root, root_cmd)]
+        if build_changed and root_cmd is None:
+            # The changed packages' own suites still run, selected as for any
+            # diff; the build and CI files themselves have no suite (#462).
+            built = [path for path in paths if any(
+                path == item or (item.endswith("/") and path.startswith(item))
+                for item in SUITE_BUILD_FILES)]
+            rest = [path for path in paths if path not in built]
+            try:
+                suites, unmapped = _select_suites(root, rest, run) if rest else ([], [])
+            except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired, TimeoutError):
+                suites, unmapped = [], list(rest)
+            untested = built + list(unmapped)
+    runnable = []
     for directory, cmd in suites:
         if cmd is None:
             detected = [m for m, _ in SUITE_COMMANDS if (directory / m).exists()]
-            uncovered = bool(paths)
-            result.update(errored=bool(detected) or uncovered, reason=(
-                f"suite detected but no runner available ({detected[0]})" if detected
-                else "no suite covers the change" if uncovered else "no suite detected"))
-            return result
+            if detected:
+                result.update(errored=True,
+                              reason=f"suite detected but no runner available ({detected[0]})")
+            else:
+                result["reason"] = "no suite covers the change" if paths else "no suite detected"
+            untested.extend(path for path in paths or [] if (root / path).is_relative_to(directory))
+        else:
+            runnable.append((directory, cmd))
+    suites = runnable
+    if paths and not suites:
+        untested = list(paths)
+        result.setdefault("reason", "no suite covers the change")
+    if untested:
+        result.update(requires_human=True, untested_paths=sorted(set(untested))[:20])
+    if not suites:
+        return result
     lock_path = state_dir() / "locks" / "suite.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     outputs = []
@@ -526,10 +553,7 @@ def run_suite(payload: dict) -> dict:
                 result["output"] = "\n".join(outputs)[-8000:]
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
-    result["ok"] = result["ran"] and result["exit_code"] == 0
-    if untested:
-        shown = ", ".join(untested[:20]) + (" …" if len(untested) > 20 else "")
-        result.update(errored=True, reason=f"no suite covers these changed paths: {shown}")
+    result["ok"] = result["ran"] and result["exit_code"] == 0 and not result["errored"]
     return result
 
 

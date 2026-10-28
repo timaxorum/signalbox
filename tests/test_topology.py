@@ -1713,6 +1713,66 @@ def test_suite_outcome_routers_are_exclusive_and_exhaustive(payload, matched):
     assert outputs[matched] == envelope
 
 
+
+@pytest.mark.parametrize(
+    "payload,matched",
+    [
+        ({"decision": "clear"}, "route-gate-auto"),
+        ({"decision": "clear", "requires_human": False}, "route-gate-auto"),
+        (
+            {"decision": "clear", "requires_human": True,
+             "untested_paths": ["docs/new.md", ".github/workflows/ci.yml"]},
+            "route-gate-human",
+        ),
+        ({"decision": "clear", "requires_human": True}, "route-gate-human"),
+        ({"decision": "needs_human", "reason": "inspect this"}, "route-gate-human"),
+        ({"decision": "needs_human", "requires_human": True,
+          "reason": "inspect this"}, "route-gate-human"),
+        ({"decision": "block"}, "route-gate-blocked"),
+        ({"decision": "block", "requires_human": True}, "route-gate-blocked"),
+        ({"decision": "unexpected"}, "route-gate-invalid"),
+        ({"decision": "unexpected", "requires_human": True}, "route-gate-invalid"),
+        ({}, "route-gate-invalid"),
+    ],
+)
+def test_gate_routers_preserve_suite_approval_requirement(payload, matched):
+    envelope = {"run_id": "sb-462", **payload}
+    routers = (
+        "route-gate-auto", "route-gate-human",
+        "route-gate-blocked", "route-gate-invalid",
+    )
+    outputs = {name: route(name, envelope) for name in routers}
+    assert [name for name, output in outputs.items() if output is not None] == [matched]
+    expected = envelope
+    if matched == "route-gate-human" and payload["decision"] == "clear":
+        expected = {
+            **envelope,
+            "reason": "untested paths: " + ", ".join(payload.get("untested_paths", [])),
+        }
+    elif matched in ("route-gate-blocked", "route-gate-invalid"):
+        expected = {
+            **envelope,
+            "stranded_topic": (
+                "gate.blocked" if matched == "route-gate-blocked"
+                else "gate.invalid-verdict"
+            ),
+        }
+    assert outputs[matched] == expected
+
+
+def test_errored_suite_still_routes_to_run_halted():
+    payload = {"run_id": "sb-462", "errored": True, "ran": False}
+    errored = route("route-suite-errored", payload)
+    assert errored == payload
+    assert route("route-suite-ran", payload) is None
+    halted = route("route-suite-error-halted", errored)
+    assert halted == {
+        **payload,
+        "reason": "suite runner could not be invoked, timed out, or worktree is missing",
+    }
+    assert named(HANDLERS, "route-suite-error-halted")["publishes"] == ["run.halted"]
+
+
 def test_suite_routes_reach_a_human_or_the_promotion_gate():
     errored = named(HANDLERS, "route-suite-error-halted")
     assert errored["subscribes"] == ["suite.errored"]

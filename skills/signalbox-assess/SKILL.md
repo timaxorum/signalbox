@@ -26,6 +26,8 @@ string routes to an invalid-verdict event and stops the run.
 Your payload carries the actual suite result: `ran`, `ok`, `errored`,
 `exit_code`, `command`, `passed`, `failed`, and `output`. These come from the
 process that ran it. On a suite payload, `ok` means the suite passed.
+The payload may carry `requires_human: true` and `untested_paths`, listing
+changed paths no suite covered (#462).
 
 The payload may also carry `suites` (a list of per-suite results containing
 `root`, `command`, `exit_code`, `passed`, and `failed`), `suite_scope` (`diff` or
@@ -40,23 +42,30 @@ is `false`, the suite did not run, whatever else the payload says.
 | `ran: true`, `ok: true`, `failed: 0` | eligible for `clear` |
 | `ran: true`, `ok: false` | **`block`** |
 | `ran: false` | **`needs_human`**, never `clear` |
-| `errored: true` | never reaches the assessor; routing sends `suite.errored` to a human |
+| `errored: true` | never reaches the assessor; routing sends `suite.errored` to `run.halted` |
 
 An empty or uncomputable diff with no detectable suite reports `ran: false`
-with a reason and means `needs_human`, never a pass. A non-empty diff that no
-suite covers reports `errored: true` with reason `no suite covers the change`
-and never reaches the assessor; routing sends it to a human.
+with a reason and means `needs_human`, never a pass. A non-empty diff where
+nothing ran reports `ran: false` with `requires_human: true` and `untested_paths`
+and reaches the assessor; choose `needs_human` because the suite did not run.
 
 A diff-scoped pass is eligible for `clear` under the same decision rules as a
 full-suite pass. `suite_scope: diff` alone is not grounds for `needs_human`.
 When a root runner also ran, `changed_paths_unmapped` lists paths only that
 root suite covered; weigh them as usual. When no suite covers a changed path,
-the mapped suites still run, but the payload is `errored: true` and never
-reaches the assessor: an untested path always goes to a human.
+the mapped suites still run, and the payload carries `requires_human: true`
+and `untested_paths` and reaches the assessor. Build or CI files are included
+in `untested_paths` when the repository root has no runner.
 
-A detected suite whose runner could not be invoked reports `errored: true`.
-Stage s2-routing sends that payload to `suite.errored` and then to a human, so
-the assessor must not invent a verdict for a payload it will never receive.
+Only an uninvokable runner, a timeout, or a missing worktree reports
+`errored: true`; routing sends `suite.errored` to `run.halted`, and that payload
+never reaches the assessor.
+
+Decide `clear`, `needs_human`, or `block` on the change itself using the rules
+below. A `clear` verdict with `requires_human: true` routes to
+`approval.requested` rather than `gate.cleared`. Do not clear or override
+`requires_human`; the suite's flag is authoritative. Use `needs_human` when
+your own assessment requires human judgment.
 
 ## Then look at the change
 
@@ -112,3 +121,6 @@ or `full`; include `fallback_reason` when supplied. If the payload carries
 `changed_paths_unmapped`, include those paths so the evidence also records what
 did not map to a suite. For scoped suite evidence, note that CI runs the full
 suite before merge. Do not describe a diff-scoped run as a full-suite pass.
+If the payload carries `requires_human` or `untested_paths`, include their
+values so the evidence records the suite's approval requirement and uncovered
+changed paths.
