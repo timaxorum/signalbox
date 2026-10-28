@@ -1531,6 +1531,47 @@ def test_notes_plan_routers_execute_as_exclusive_exhaustive_complements():
         assert routed == {**invalid, "stranded_topic": "notes.invalid-verdict"}
 
 
+
+@pytest.mark.parametrize(
+    "payload,accepted",
+    [
+        ({"notes": [], "outcome": "empty-vault"}, True),
+        # #452: named work remains self-evidencing regardless of outcome.
+        ({"notes": ["joins.md"], "outcome": "empty-vault"}, True),
+        ({"notes": ["joins.md"]}, True),
+        ({"outcome": "empty-vault"}, False),
+        *[
+            ({"notes": notes, "outcome": "empty-vault"}, False)
+            for notes in (None, "oops", 7, {"name": "joins.md"})
+        ],
+        ({"outcome": "invalid"}, False),
+        ({"outcome": "blocked"}, False),
+        ({"notes": [], "outcome": "reviewed", "considered": []}, False),
+        ({"notes": [], "outcome": "reviewed"}, False),
+    ],
+)
+def test_notes_empty_vault_routes_are_exclusive_and_exhaustive(payload, accepted):
+    """#452: only the act's well-formed empty-vault plan bypasses evidence."""
+    payload = {"run_id": "sb-452", **payload}
+    accepted_plan = route("route-notes-plan-accepted", payload)
+    invalid_plan = route("route-notes-plan-invalid", payload)
+    assert (accepted_plan is not None) != (invalid_plan is not None)
+    assert accepted_plan == (payload if accepted else None)
+    assert invalid_plan == (
+        None if accepted else {**payload, "stranded_topic": "notes.invalid-verdict"}
+    )
+
+
+def test_notes_plan_router_predicates_remain_textual_complements():
+    """#452: accepting an act-only outcome must preserve the invalid complement."""
+    accepted = named(HANDLERS, "route-notes-plan-accepted")["args"][-1]
+    invalid = named(HANDLERS, "route-notes-plan-invalid")["args"][-1]
+    predicate = accepted.removeprefix("select(").removesuffix(")")
+    assert invalid == (
+        f"select(({predicate}) | not)"
+        ' | . + {stranded_topic: "notes.invalid-verdict"}'
+    )
+
 def acts_that_can_refuse() -> dict[str, str]:
     """Topology node -> command, derived from acts.py's real dispatch and returns."""
     source = (ROOT / "src" / "signalbox" / "acts.py").read_text()

@@ -30,6 +30,7 @@ from signalbox.paths import (
     require_worktree,
     run_tmp_dir,
     vault_dir,
+    vault_has_notes,
 )
 
 # Each role is a skill, so the procedure is versioned and reviewable on its own
@@ -339,6 +340,14 @@ def run(role: str, payload: dict, model: str | None = None) -> tuple[dict, int]:
     vault = None
     if role in VAULT_ROLES:
         vault = vault_dir() if role in NOTES_ROLES else recall_vault_dir()
+        if role == "plan-notes":
+            # #452: only the act may certify that there is nothing to review.
+            try:
+                has_notes = vault_has_notes(vault)
+            except OSError as exc:
+                raise VaultMissing(f"notes vault {vault} could not be read: {exc}") from exc
+            if not has_notes:
+                return {"notes": [], "outcome": "empty-vault", **project(payload)}, 0
         subprocess_kwargs["env"] = {
             **os.environ,
             "SIGNALBOX_VAULT": "" if vault is None else str(vault),
@@ -422,6 +431,12 @@ def run(role: str, payload: dict, model: str | None = None) -> tuple[dict, int]:
         verdict = {"verdict": "unparseable", "output": output}
         if elided:
             verdict["output_elided_chars"] = elided
+
+    if role == "plan-notes" and verdict.get("outcome") == "empty-vault":
+        # #452: a model cannot claim the act's empty-vault bypass.
+        verdict.pop("notes", None)
+        verdict.pop("considered", None)
+        verdict.update(outcome="invalid", reason="empty-vault is reserved for the act")
 
     merged = merge(payload, verdict, role)
     # The model's product remains the payload base. Only carried fields cross

@@ -12,6 +12,8 @@ and its own session.
 
 ## Output contract
 
+An empty vault never reaches the agent: the act answers `empty-vault` itself, so the model must never return that outcome.
+
 ```json
 {
   "notes": [
