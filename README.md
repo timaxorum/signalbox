@@ -248,8 +248,9 @@ success. The `-e` edge is reserved for the primitive itself crashing or timing
 out; its error payload preserves the input event's run identity for downstream routing.
 `run-suite` is the deliberate exception: its routers select `errored`, not
 `ok`. A failing suite is a verdict that must reach the promotion gate, rather
-than a topology transition; only failure to invoke a detected suite is routed
-to `suite.errored`.
+than a topology transition. Failure to invoke a detected suite, or a non-empty
+diff that no suite covers (reason `no suite covers the change`), is routed to
+`suite.errored`.
 
 `completion.closed` is the completion rendezvous's neutral result, not a claim
 that the run succeeded. Two exclusive jq routers interpret it: a payload with

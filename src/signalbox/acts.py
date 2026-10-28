@@ -382,6 +382,7 @@ def run_suite(payload: dict) -> dict:
         root = require_worktree(payload)
     except WorktreeMissing as exc:
         return {**result, "reason": str(exc)}
+    paths = None
     try:
         # Rebase runs first: using its target excludes upstream commits that
         # would otherwise appear in the original base_sha..HEAD diff.
@@ -400,7 +401,11 @@ def run_suite(payload: dict) -> dict:
         suites, unmapped = _select_suites(root, paths, run)
         if unmapped:
             result["changed_paths_unmapped"] = unmapped
-            raise ValueError("changed paths have no suite root")
+            root_cmd = suite_command(root)
+            if root_cmd is not None and all(directory != root for directory, _ in suites):
+                suites.append((root, root_cmd))
+            if not suites:
+                return {**result, "errored": True, "reason": "no suite covers the change"}
         result["suite_scope"] = "diff"
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired, TimeoutError) as exc:
         result["fallback_reason"] = str(exc)
@@ -408,9 +413,10 @@ def run_suite(payload: dict) -> dict:
     for directory, cmd in suites:
         if cmd is None:
             detected = [m for m, _ in SUITE_COMMANDS if (directory / m).exists()]
-            result.update(errored=bool(detected), reason=(
+            uncovered = bool(paths)
+            result.update(errored=bool(detected) or uncovered, reason=(
                 f"suite detected but no runner available ({detected[0]})" if detected
-                else "no suite detected"))
+                else "no suite covers the change" if uncovered else "no suite detected"))
             return result
     lock_path = state_dir() / "locks" / "suite.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
