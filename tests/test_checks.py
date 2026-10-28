@@ -829,3 +829,85 @@ def test_prepare_workspace_names_the_branch_it_actually_branched_from(tmp_path, 
     assert out["ok"] is True, out.get("error")
     assert out["base_branch"] == "redesign/event-first"
     assert out["base_sha"], "the sha must still be pinned"
+
+
+@pytest.fixture
+def workspace_base_repo(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path / "state"))
+    monkeypatch.delenv("SIGNALBOX_VAULT", raising=False)
+
+    def git(root, *args):
+        return subprocess.run(
+            ["git", *args], cwd=root, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    origin = tmp_path / "origin.git"
+    git(tmp_path, "init", "--bare", "-q", "-b", "main", str(origin))
+    source = tmp_path / "repo"
+    git(tmp_path, "clone", str(origin), str(source))
+    git(source, "config", "user.email", "t@t")
+    git(source, "config", "user.name", "t")
+    git(source, "commit", "--allow-empty", "-qm", "base", "--no-gpg-sign")
+    git(source, "push", "origin", "main")
+    return git, source, origin
+
+
+def test_prepare_workspace_pins_the_remote_tip_not_a_stale_local_branch(
+    tmp_path, workspace_base_repo,
+):
+    from pathlib import Path
+
+    git, source, origin = workspace_base_repo
+    stale = git(source, "rev-parse", "main")
+    git(source, "checkout", "-b", "other")
+    updater = tmp_path / "updater"
+    git(tmp_path, "clone", str(origin), str(updater))
+    git(updater, "config", "user.email", "t@t")
+    git(updater, "config", "user.name", "t")
+    for index in range(3):
+        git(updater, "commit", "--allow-empty", "-qm", f"advance {index}", "--no-gpg-sign")
+    git(updater, "push", "origin", "main")
+
+    out = acts.prepare_workspace({
+        "run_id": "remote-tip", "repo_path": str(source), "base_branch": "main",
+    })
+
+    assert out["ok"] is True, out.get("error")
+    assert out["base_sha"] == git(origin, "rev-parse", "main")
+    assert out["base_ref"] == "origin/main"
+    assert out["local_base_sha"] == stale
+    assert git(Path(out["worktree"]), "rev-parse", "HEAD") == out["base_sha"]
+
+
+def test_prepare_workspace_refuses_when_the_base_cannot_be_fetched(
+    tmp_path, workspace_base_repo,
+):
+    from signalbox.paths import worktree_for
+
+    git, source, _ = workspace_base_repo
+    git(source, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    payload = {
+        "run_id": "missing-origin", "repo_path": str(source), "base_branch": "main",
+    }
+
+    out = acts.prepare_workspace(payload)
+
+    assert out["ok"] is False
+    assert "cannot fetch origin/main" in out["error"]
+    assert not worktree_for(payload).exists()
+
+
+def test_prepare_workspace_without_a_remote_uses_the_local_branch(workspace_base_repo):
+    git, source, _ = workspace_base_repo
+    git(source, "remote", "remove", "origin")
+    local = git(source, "rev-parse", "main")
+
+    out = acts.prepare_workspace({
+        "run_id": "local-base", "repo_path": str(source), "base_branch": "main",
+    })
+
+    assert out["ok"] is True, out.get("error")
+    assert out["base_ref"] == "main"
+    assert out["base_sha"] == local
