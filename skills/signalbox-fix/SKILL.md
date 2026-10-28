@@ -91,5 +91,7 @@ rather than shrinking, that is a signal the shard is mis-specified — say so wi
 
 ## Discipline
 
+Build with the CARGO_TARGET_DIR and TMPDIR you are given, and never redirect builds or temp files to /tmp.
+
 Everything from `signalbox-implement` still applies: no placeholders, no
 commits, no touching another shard's files, tests count as part of the work.

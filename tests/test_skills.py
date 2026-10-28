@@ -307,3 +307,12 @@ def test_vault_skills_require_the_stamped_vault_and_carry_warnings():
     write_note = (SKILLS / "signalbox-write-note" / "SKILL.md").read_text()
     assert "Do not commit." in write_note
     assert "A later step handles that" not in write_note
+
+
+@pytest.mark.parametrize("skill", ["signalbox-implement", "signalbox-fix"])
+def test_building_skills_use_granted_build_and_temp_directories(skill):
+    body = (SKILLS / skill / "SKILL.md").read_text()
+    assert (
+        "Build with the CARGO_TARGET_DIR and TMPDIR you are given, "
+        "and never redirect builds or temp files to /tmp."
+    ) in body
