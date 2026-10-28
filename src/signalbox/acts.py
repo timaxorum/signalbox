@@ -383,6 +383,10 @@ def run_suite(payload: dict) -> dict:
     except WorktreeMissing as exc:
         return {**result, "reason": str(exc)}
     paths = None
+    # Changed paths that no suite that runs here covers. The mapped suites
+    # still run so a person sees real results, but the run goes to a person:
+    # an untested path is never cleared on the assessor's judgment (#450).
+    untested: list[str] = []
     try:
         # Rebase runs first: using its target excludes upstream commits that
         # would otherwise appear in the original base_sha..HEAD diff.
@@ -404,6 +408,8 @@ def run_suite(payload: dict) -> dict:
             root_cmd = suite_command(root)
             if root_cmd is not None and all(directory != root for directory, _ in suites):
                 suites.append((root, root_cmd))
+            if root_cmd is None:
+                untested = list(unmapped)
             if not suites:
                 return {**result, "errored": True, "reason": "no suite covers the change"}
         result["suite_scope"] = "diff"
@@ -452,6 +458,9 @@ def run_suite(payload: dict) -> dict:
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
     result["ok"] = result["ran"] and result["exit_code"] == 0
+    if untested:
+        shown = ", ".join(untested[:20]) + (" …" if len(untested) > 20 else "")
+        result.update(errored=True, reason=f"no suite covers these changed paths: {shown}")
     return result
 
 

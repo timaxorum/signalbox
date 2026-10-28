@@ -49,9 +49,10 @@ and never reaches the assessor; routing sends it to a human.
 
 A diff-scoped pass is eligible for `clear` under the same decision rules as a
 full-suite pass. `suite_scope: diff` alone is not grounds for `needs_human`.
-When mapped suites ran alongside unmapped paths, `changed_paths_unmapped`
-lists the untested paths. Weigh those paths when deciding whether the suite
-evidence is sufficient for `clear` or the change needs a human.
+When a root runner also ran, `changed_paths_unmapped` lists paths only that
+root suite covered; weigh them as usual. When no suite covers a changed path,
+the mapped suites still run, but the payload is `errored: true` and never
+reaches the assessor: an untested path always goes to a human.
 
 A detected suite whose runner could not be invoked reports `errored: true`.
 Stage s2-routing sends that payload to `suite.errored` and then to a human, so

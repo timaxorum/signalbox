@@ -1358,7 +1358,11 @@ def test_mapped_and_unmapped_changes_keep_selected_suites(tmp_path, monkeypatch,
     assert calls == expected
     assert result["changed_paths_unmapped"] == ["docs/readme.md"]
     assert result["ran"] is result["ok"] is True
-    assert result["errored"] is False
+    # Without a root runner the readme is untested: the suites ran, but the
+    # run goes to a person rather than being eligible for clear.
+    assert result["errored"] is (not root_runner)
+    if not root_runner:
+        assert result["reason"] == "no suite covers these changed paths: docs/readme.md"
     assert result["suite_scope"] == "diff"
     assert len(result["suites"]) == len(expected)
 

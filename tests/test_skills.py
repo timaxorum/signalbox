@@ -151,8 +151,9 @@ def test_assess_skill_reports_suite_scope_without_changing_decision_rules():
         "`no suite covers the change` and never reaches the assessor"
     ) in prose
     assert (
-        "When mapped suites ran alongside unmapped paths, `changed_paths_unmapped` "
-        "lists the untested paths. Weigh those paths"
+        "When no suite covers a changed path, the mapped suites still run, but the "
+        "payload is `errored: true` and never reaches the assessor: an untested path "
+        "always goes to a human."
     ) in prose
 
 
