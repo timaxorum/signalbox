@@ -117,6 +117,34 @@ args = ["-s", "http.request", "--publish-as", "approval.granted", "--",
 subscribes = ["http.request"]
 publishes = ["approval.granted"]
 
+# #469: cancellation is operator control vocabulary, and must name a run.
+[[handlers]]
+name = "route-cancel-requested"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "http.request", "--publish-as", "run.cancel-requested", "--",
+        "jq", "-c", 'select(.body.event == "run.cancel-requested") | .body | select((.run_id // "") != "")']
+subscribes = ["http.request"]
+publishes = ["run.cancel-requested"]
+
+# #469: halt even when no model is running (CI or approval waits). Carry pr
+# through to run.halted so clear-pr-pending removes the waiting PR marker.
+[[handlers]]
+name = "route-cancel-halted"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "run.cancel-requested", "--publish-as", "run.halted", "--",
+        "jq", "-c", '. + {reason: ("cancelled: " + (.reason // "operator"))}']
+subscribes = ["run.cancel-requested"]
+publishes = ["run.halted"]
+
+# #469: mark the run cancelled before stopping its processes. This sink emits
+# nothing; the independent halt route above also covers parked runs.
+[[sinks]]
+name = "stop-run"
+path = "~/.local/share/emergent/primitives/bin/exec-sink"
+args = ["-s", "run.cancel-requested", "-t", "30000", "--",
+        "signalbox", "stop-run"]
+subscribes = ["run.cancel-requested"]
+
 # Invocation provenance re-enters through control, so this exclusive edge is
 # load-bearing evidence that every non-deterministic act actually happened.
 [[handlers]]
@@ -139,7 +167,7 @@ publishes = ["model.invoked"]
 name = "route-unknown-emission"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "http.request", "--publish-as", "control.unknown-event", "--",
-        "jq", "-c", 'select(.headers["x-github-event"] == null) | select((.body.event // "") | IN("run.requested","shard.file-written","shard.check-ran","shard.submitted","approval.granted","model.invoked") | not) | .body']
+        "jq", "-c", 'select(.headers["x-github-event"] == null) | select((.body.event // "") | IN("run.requested","shard.file-written","shard.check-ran","shard.submitted","approval.granted","run.cancel-requested","model.invoked") | not) | .body']
 subscribes = ["http.request"]
 publishes = ["control.unknown-event"]
 
@@ -1627,7 +1655,7 @@ subscribes = ["exec.output", "exec.exit",
               "remediation.assessed", "remediation.closed", "remediation.failed",
               "remediation.invalid-verdict", "remediation.requested",
               "review.failed", "review.invalid-verdict", "review.submitted", "run.built", "run.rebuilt",
-              "run.completed", "run.halted", "run.requested", "scope.violated",
+              "run.cancel-requested", "run.completed", "run.halted", "run.requested", "scope.violated",
               "shard.abandoned", "shard.approved", "shard.built", "shard.changes-requested",
               "shard.check-ran", "shard.escalated", "shard.file-written",
               "shard.invalid-verdict", "shard.opened", "shard.silent", "shard.submitted",

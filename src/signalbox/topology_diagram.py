@@ -25,6 +25,7 @@ REENTRY_HANDLERS = (
     "route-check-ran",
     "route-shard-submitted",
     "route-approval-granted",
+    "route-cancel-requested",  # #469: operator control re-enters out of band.
     "route-model-invoked",
     "route-unknown-emission",
     "route-check-suite",
