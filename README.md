@@ -6,7 +6,7 @@ The name is from railway signaling. A signal box is where the interlocking lives
 
 ## The shape
 
-One engine. Four sources, one hundred twenty-seven handlers, eleven sinks, and no script that knows what comes next.
+One engine. Four sources, one hundred thirty-three handlers, eleven sinks, and no script that knows what comes next.
 
 ```
 route-run-requested ─> [run.requested] ─> prepare-workspace, dashboard
@@ -23,7 +23,8 @@ route-prepare-ready ─> [workspace.ready] ─> fetch-issue, dashboard
 │         route-plan-audit-failed-halted, route-audit-exhausted,
 │         route-review-failed-halted, guard-ci-review-rounds-exhaust,
 │         route-ci-review-invalid-halted, route-stage-dirty,
-│         route-rebase-failed-halted, route-suite-error-halted,
+│         route-rebase-failed-halted, route-signing-refused-terminal,
+│         route-signing-errored-halted, route-suite-error-halted,
 │         route-assess-failed-halted, route-remediation-closed-halted,
 │         route-remediation-invalid-halted, route-remediation-failed-halted,
 │         guard-ci-rounds-exhaust, route-ci-findings-refused-terminal,
@@ -71,7 +72,7 @@ route-plan-approved ─> [plan.accepted] ─> open-first-stage, dashboard
 └─> to: route-rebase-ok, route-rebase-conflict, route-rebase-invalid,
         dashboard
 split-shards ─> [shard.opened] ─> dispatch-implement, dashboard
-route-rebase-ok ─> [branch.rebased] ─> run-suite, dashboard
+route-rebase-ok ─> [branch.rebased] ─> verify-signatures, dashboard
 [branch.rebase-conflicted]
 ├─< from: route-rebase-conflict
 └─> to: route-remediation-open, dashboard, notify
@@ -85,9 +86,9 @@ route-check-ran ─> [shard.check-ran] ─> dashboard
 ├─< from: route-approval-granted
 └─> to: push-branch, clear-approval-pending, dashboard
 route-check-suite ─> [checks.observed] ─> rehydrate-pr, dashboard
-[suite.run-attempted]
-├─< from: run-suite
-└─> to: route-suite-ran, route-suite-errored, dashboard
+[branch.signing-attempted]
+├─< from: verify-signatures
+└─> to: route-signing-ok, route-signing-refused, dashboard, trace
 [checks.reported]
 ├─< from: rehydrate-pr
 └─> to: route-checks-passed, route-checks-failed, dashboard
@@ -99,10 +100,12 @@ route-shard-done ─> [shard.built] ─> review-shard, dashboard
 [stage.closed (halt)]
 ├─< from: join-stage
 └─> to: route-stage-clean, route-stage-dirty, dashboard
-route-suite-ran ─> [suite.ran] ─> assess, dashboard
-[suite.errored (halt)]
-├─< from: route-suite-errored
-└─> to: route-suite-error-halted, dashboard, notify
+[branch.signed]
+├─< from: route-signing-ok
+└─> to: route-rebase-resigned, run-suite, dashboard, trace
+[branch.signing-refused (halt)]
+├─< from: route-signing-refused
+└─> to: route-signing-refused-terminal, dashboard, trace
 [branch.push-attempted]
 ├─< from: push-branch
 └─> to: route-push-pushed, route-push-failed, dashboard
@@ -112,10 +115,10 @@ route-suite-ran ─> [suite.ran] ─> assess, dashboard
         route-ci-approved, route-ci-changes, route-ci-review-invalid-halted,
         dashboard
 route-stage-clean ─> [stage.mergeable] ─> merge-stage, dashboard
-[gate.assessed]
-├─< from: assess
-└─> to: route-gate-auto, route-gate-human, route-gate-blocked,
-        route-gate-invalid, dashboard
+route-rebase-resigned ─> [rebase.resigned] ─> dashboard, trace
+[suite.run-attempted]
+├─< from: run-suite
+└─> to: route-suite-ran, route-suite-errored, dashboard
 route-push-pushed ─> [branch.pushed] ─> open-pr, dashboard
 route-push-failed ─> [branch.push-failed] ─> route-remediation-open, dashboard
 route-checks-passed ─> [checks.passed] ─> merge-pr, plan-notes, dashboard
@@ -132,10 +135,10 @@ route-ci-approved ─> [ci.fix-approved] ─> commit-ci-fix, dashboard
 [merge.attempted]
 ├─< from: merge-stage
 └─> to: route-merge-ok, route-merge-conflict, dashboard
-route-gate-auto ─> [gate.cleared] ─> push-branch, dashboard
-[approval.requested]
-├─< from: route-gate-human
-└─> to: mark-approval-pending, dashboard, notify
+route-suite-ran ─> [suite.ran] ─> assess, dashboard
+[suite.errored (halt)]
+├─< from: route-suite-errored
+└─> to: route-suite-error-halted, dashboard, notify
 [pr.open-attempted]
 ├─< from: open-pr
 └─> to: route-open-opened, route-open-failed, dashboard
@@ -156,6 +159,10 @@ route-gate-auto ─> [gate.cleared] ─> push-branch, dashboard
 ├─< from: route-merge-ok
 └─> to: guard-stages-advance, guard-stages-exhaust, join-run, dashboard
 route-merge-conflict ─> [stage.conflicted] ─> split-shards, dashboard
+[gate.assessed]
+├─< from: assess
+└─> to: route-gate-auto, route-gate-human, route-gate-blocked,
+        route-gate-invalid, dashboard
 route-open-opened ─> [pr.opened] ─> mark-pr-pending, dashboard
 route-open-failed ─> [pr.open-failed] ─> route-remediation-open, dashboard
 route-detail-detailed ─> [checks.detailed] ─> map-ci-to-findings, dashboard
@@ -174,6 +181,10 @@ route-notes-plan-accepted ─> [notes.plan-accepted] ─> split-notes, dashboard
 ├─< from: route-notes-plan-invalid
 └─> to: route-notes-invalid-halted, dashboard, trace
 guard-stages-exhaust ─> [stages.exhausted] ─> dashboard
+route-gate-auto ─> [gate.cleared] ─> push-branch, dashboard
+[approval.requested]
+├─< from: route-gate-human
+└─> to: mark-approval-pending, dashboard, notify
 [ci.findings-attempted]
 ├─< from: map-ci-to-findings
 └─> to: route-ci-findings-ok, route-ci-findings-refused-halted, dashboard

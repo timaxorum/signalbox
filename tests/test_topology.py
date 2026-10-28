@@ -355,6 +355,7 @@ def test_every_published_event_has_a_consumer():
 
 
 PASSIVE_CONSUMER_EXEMPTIONS = {
+    "rebase.resigned": "signature repair is observational telemetry after accepted verification",
     "exec.exit": "interval-source liveness telemetry is intentionally observed rather than advanced",
     "model.invoked": "invocation provenance is audit telemetry and not run-control input",
     "shard.check-ran": "a check announcement is progress telemetry while the shard remains in flight",
@@ -832,7 +833,8 @@ def test_rebase_precedes_the_suite_without_changing_the_gate_push_edges():
     assert rebase["subscribes"] == ["run.built", "run.rebuilt"]
     assert rebase["args"][rebase["args"].index("-e") + 1] == "branch.rebase-failed"
     assert "branch.rebase-failed" in rebase["publishes"]
-    assert suite["subscribes"] == ["branch.rebased"]
+    assert suite["subscribes"] == ["branch.signed"]
+    assert named(HANDLERS, "verify-signatures")["subscribes"] == ["branch.rebased"]
     assert "run.built" not in suite["subscribes"]
     assert push["subscribes"] == ["gate.cleared", "approval.granted"]
 
@@ -2195,3 +2197,63 @@ def test_no_join_repeats_a_key():
     for handler in joins():
         keys = _join_keys(handler)
         assert len(keys) == len(set(keys)), f"{handler['name']} repeats a join key"
+
+
+def test_suite_requires_signature_verification_after_accepted_rebase():
+    reachable = {"branch.rebased"}
+    while True:
+        expanded = set(reachable)
+        for handler in HANDLERS:
+            if handler["name"] == "verify-signatures":
+                continue
+            if reachable & set(handler.get("subscribes", [])):
+                expanded.update(handler.get("publishes", []))
+        if expanded == reachable:
+            break
+        reachable = expanded
+    assert "suite.ran" not in reachable
+
+
+def test_signing_refusal_halts_with_exact_reason():
+    envelope = {"run_id": "sb-449", "ok": False, "reason": "act supplied"}
+    refused = route("route-signing-refused", envelope)
+    assert refused == {**envelope, "stranded_topic": "branch.signing-attempted"}
+    halted = route("route-signing-refused-terminal", refused)
+    assert halted == {**refused, "reason": "unsigned commit after rebase"}
+
+
+@pytest.mark.parametrize("extra,emits", [
+    ({}, False), ({"resigned_shas": []}, False),
+    ({"resigned_shas": ["abc"]}, True),
+])
+def test_rebase_resigned_observes_only_repaired_signatures(extra, emits):
+    envelope = {"run_id": "sb-449", "ok": True, **extra}
+    assert route("route-rebase-resigned", envelope) == (envelope if emits else None)
+    assert named(HANDLERS, "route-rebase-resigned")["subscribes"] == ["branch.signed"]
+
+
+def test_signing_attempt_has_exactly_two_outcome_handlers():
+    assert {
+        h["name"] for h in HANDLERS
+        if "branch.signing-attempted" in h.get("subscribes", [])
+    } == {"route-signing-ok", "route-signing-refused"}
+
+
+def test_signing_invocation_error_halts_with_error_detail():
+    envelope = {"run_id": "sb-449", "error": {"exit_code": 7, "stderr": "bad key"}}
+    assert route("route-signing-errored-halted", envelope) == {
+        **envelope, "reason": "signature verification failed (exit 7): bad key",
+    }
+
+
+def test_signing_notifies_only_through_the_halt_terminal():
+    topics = {
+        "branch.signing-attempted", "branch.signed", "branch.signing-refused",
+        "branch.signing-errored", "rebase.resigned",
+    }
+    notify = named(SINKS, "notify")
+    assert not topics.intersection(notify["subscribes"])
+    assert not topics.intersection(notify["args"])
+    assert "run.halted" in notify["subscribes"]
+    for sink in ("dashboard", "trace"):
+        assert topics <= set(named(SINKS, sink)["subscribes"])

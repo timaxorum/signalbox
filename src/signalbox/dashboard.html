@@ -359,8 +359,13 @@ const EVENT = {
   "stage.merged":["build","work"], "stage.conflicted":["build","stop"],
   "stages.exhausted":["build","go"], "run.built":["build","go","rebase-branch","in"],
 
+  "branch.signing-attempted":["gate","judge","verify-signatures","out"],
+  "branch.signed":["gate","work","run-suite","in"],
+  "rebase.resigned":["gate","work"],
+  "branch.signing-refused":["gate","stop"],
+  "branch.signing-errored":["gate","stop"],
   "branch.rebase-attempted":["gate","judge","rebase-branch","out"],
-  "branch.rebased":["gate","work","run-suite","in"], "branch.rebase-conflicted":["gate","stop"],
+  "branch.rebased":["gate","work","verify-signatures","in"], "branch.rebase-conflicted":["gate","stop"],
   "branch.rebase-failed":["gate","stop"], "branch.rebase-invalid-verdict":["gate","stop"],
   "suite.run-attempted":["gate","judge","run-suite","out"],
   "suite.ran":["gate","judge","assess","in"],
@@ -776,6 +781,12 @@ function apply(msg) {
       run.verdict = { label: "CI COMMIT REFUSED", cls: "v-red",
         detail: p.reason || "" }; break;
     case "branch.rebased": milestone("REBASED"); break;
+    case "branch.signed": milestone("SIGNED"); break;
+    case "rebase.resigned": milestone("RE-SIGNED"); break;
+    case "branch.signing-refused": case "branch.signing-errored":
+      set("gate", "failed");
+      run.verdict = { label: "SIGNING BLOCKED", cls: "v-red",
+        detail: p.reason || p.error || t }; break;
     case "branch.rebase-conflicted": case "branch.rebase-invalid-verdict":
       set("gate", "failed");
       run.verdict = { label: "REBASE BLOCKED", cls: "v-red",
