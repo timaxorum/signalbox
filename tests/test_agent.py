@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -170,3 +171,26 @@ def test_unreadable_notes_vault_cli_emits_no_verdict(notes_agent, monkeypatch, c
     assert len(captured.err.splitlines()) == 1
     assert notes_agent.calls == []
     assert notes_agent.posted == []
+
+
+@pytest.mark.parametrize("runner", ["codex", "claude"])
+def test_every_runner_sees_the_pinned_pnpm(monkeypatch, tmp_path, runner):
+    """#473: even non-build, non-vault roles receive the repository pin."""
+    root = tmp_path / "worktree"
+    root.mkdir()
+    (root / "package.json").write_text(json.dumps({"packageManager": "pnpm@10.31.0"}))
+    monkeypatch.setenv("SIGNALBOX_RUNNER", runner)
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    monkeypatch.setattr(agent, "_workdir", lambda payload: str(root))
+    calls, posted = [], []
+
+    def run(command, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(returncode=0, stdout='{"decision":"clear"}', stderr="")
+
+    monkeypatch.setattr(agent.subprocess, "run", run)
+    monkeypatch.setattr(agent, "post_provenance", lambda *args, **kwargs: posted.append(kwargs))
+    agent.run("assess", {"run_id": "r473"})
+    prefix = str(tmp_path / "shims/pnpm-10.31.0")
+    assert calls[0]["env"]["PATH"].split(os.pathsep)[0] == prefix
+    assert posted[0]["env"]["PATH"].split(os.pathsep)[0] == prefix

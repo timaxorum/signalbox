@@ -46,13 +46,17 @@ def test_claude_build_roles_receive_build_dirs(calls, tmp_path, monkeypatch, rol
     assert tmp.is_dir()
 
 
-def test_review_receives_no_build_dirs_or_env(calls, tmp_path):
+def test_review_receives_no_build_dirs(calls, tmp_path):
     _, code = agent.run("review", {"run_id": "r1"}, model="opus")
 
     assert code == 0
     command, kwargs = calls[0]
     assert "--add-dir" not in command
-    assert "env" not in kwargs
+    # #473: every runner now gets an env (the pinned-pnpm shim on PATH);
+    # what non-build roles must not get is the build directories.
+    env = kwargs.get("env", {})
+    assert env.get("CARGO_TARGET_DIR") != str(tmp_path / "target")
+    assert env.get("TMPDIR") != str(tmp_path / "tmp")
     assert not (tmp_path / "target").exists()
     assert not (tmp_path / "tmp").exists()
 
@@ -70,7 +74,11 @@ def test_codex_build_roles_keep_stdin_last_and_no_claude_flags(
     assert command[0] == "codex"
     assert command[-1] == "-"
     assert "--add-dir" not in command
-    assert "env" not in kwargs
+    # #473: every runner now gets an env (the pinned-pnpm shim on PATH);
+    # what non-build roles must not get is the build directories.
+    env = kwargs.get("env", {})
+    assert env.get("CARGO_TARGET_DIR") != str(tmp_path / "target")
+    assert env.get("TMPDIR") != str(tmp_path / "tmp")
     assert not (tmp_path / "target").exists()
     assert not (tmp_path / "tmp").exists()
 

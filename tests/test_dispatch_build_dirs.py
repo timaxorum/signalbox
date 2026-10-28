@@ -1,6 +1,7 @@
 """Building dispatches receive writable caches and run-scoped temporary space."""
 
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,8 @@ from signalbox import dispatch
 @pytest.mark.parametrize("runner", ["claude", "codex"])
 @pytest.mark.parametrize("resumed", [False, True])
 def test_dispatch_grants_build_directories(monkeypatch, tmp_path, skill, runner, resumed):
+    # #473: dispatched implement/fix processes must use the repository pin.
+    (tmp_path / "package.json").write_text(json.dumps({"packageManager": "pnpm@10.31.0"}))
     calls = []
     payload = {
         "run_id": "r1",
@@ -55,6 +58,7 @@ def test_dispatch_grants_build_directories(monkeypatch, tmp_path, skill, runner,
     assert dispatch.main(args) == 0
     assert len(calls) == 1
     command, kwargs = calls[0]
+    assert kwargs["env"]["PATH"].split(os.pathsep)[0] == str(tmp_path / "shims/pnpm-10.31.0")
     assert kwargs["env"]["CARGO_TARGET_DIR"] == str(target)
     assert kwargs["env"]["TMPDIR"] == str(tmp)
     assert command[0] == runner

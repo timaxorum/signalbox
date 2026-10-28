@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -36,6 +37,42 @@ def pnpm_version(root: Path) -> str | None:
             if match:
                 return match[1]
     return None
+
+
+def pnpm_shim_dir(root: Path, state: Path) -> Path | None:
+    """Make bare pnpm use the repository's pinned version (#473)."""
+    version = pnpm_version(root)
+    if version is None:
+        return None
+    directory = Path(state) / "shims" / f"pnpm-{version}"
+    directory.mkdir(parents=True, exist_ok=True)
+    shim = directory / "pnpm"
+    content = f'#!/bin/sh\nexec npx -y "pnpm@{version}" "$@"\n'
+    try:
+        if shim.read_text() == content and shim.stat().st_mode & 0o777 == 0o755:
+            return directory
+    except FileNotFoundError:
+        pass
+    with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as temporary:
+        temporary_path = Path(temporary.name)
+        try:
+            temporary.write(content)
+            temporary.flush()
+            os.fchmod(temporary.fileno(), 0o755)
+            os.replace(temporary_path, shim)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+    return directory
+
+
+def with_pinned_pnpm(env: dict[str, str], root: Path, state: Path) -> dict[str, str]:
+    """Give agent and suite processes the pinned pnpm and shared store (#473)."""
+    result = dict(env)
+    directory = pnpm_shim_dir(root, state)
+    if directory is not None:
+        result["PATH"] = os.pathsep.join((str(directory), env["PATH"])) if "PATH" in env else str(directory)
+        result["npm_config_store_dir"] = str(Path(state) / "pnpm-store")
+    return result
 
 
 def pnpm_argv(root: Path) -> list[str]:
