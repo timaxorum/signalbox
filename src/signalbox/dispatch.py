@@ -30,7 +30,14 @@ from pathlib import Path
 from signalbox.acts import read_session, record_session
 from signalbox.diagnostics import invocation_diagnostic
 from signalbox.emit import post_provenance
-from signalbox.paths import SkillMissing, require_skill, state_dir, worktree_for
+from signalbox.paths import (
+    SkillMissing,
+    build_target_dir,
+    require_skill,
+    run_tmp_dir,
+    state_dir,
+    worktree_for,
+)
 
 # Which CLI performs each acting skill. Implementation and fix run on codex;
 # the judging roles in agent.py run on Claude. Both are just processes that
@@ -170,17 +177,21 @@ def codex_prompt(skill: str, payload: dict) -> str:
 
 
 def claude_command(
-    skill: str, payload: dict, model: str | None, session_id: str | None = None
+    skill: str, payload: dict, model: str | None, session_id: str | None = None,
+    *, writable_dirs: tuple[Path, ...] = (),
 ) -> list[str]:
     command = ["claude", "-p", prompt_for(skill, payload)]
     command += ["--session-id", session_id] if session_id else []
     if model:
         command += ["--model", model]
+    for directory in writable_dirs:
+        command += ["--add-dir", str(directory)]
     return command + ["--allowedTools", *CLAUDE_TOOLS]
 
 
 def claude_resume_command(
-    skill: str, payload: dict, model: str | None, session_id: str
+    skill: str, payload: dict, model: str | None, session_id: str,
+    *, writable_dirs: tuple[Path, ...] = (),
 ) -> list[str]:
     command = [
         "claude",
@@ -191,11 +202,15 @@ def claude_resume_command(
     ]
     if model:
         command += ["--model", model]
+    for directory in writable_dirs:
+        command += ["--add-dir", str(directory)]
     return command + ["--allowedTools", *CLAUDE_TOOLS]
 
 
-def codex_command(worktree: Path, model: str | None) -> list[str]:
-    """Codex, non-interactive, writing only inside the run's worktree.
+def codex_command(
+    worktree: Path, model: str | None, *, writable_dirs: tuple[Path, ...] = ()
+) -> list[str]:
+    """Codex, non-interactive, writing inside the worktree and granted directories.
 
     The sandbox is what bounds an acting agent here, in place of Claude Code's
     tool allowlist. Two settings are load-bearing and neither is a default:
@@ -219,6 +234,12 @@ def codex_command(worktree: Path, model: str | None) -> list[str]:
         'approval_policy="never"',
         "--json",
     ]
+    if writable_dirs:
+        command += [
+            "-c",
+            "sandbox_workspace_write.writable_roots="
+            + json.dumps([str(directory) for directory in writable_dirs]),
+        ]
     if model:
         command += ["--model", model]
     # `-` makes codex read the prompt from stdin, which keeps the work item off
@@ -226,7 +247,9 @@ def codex_command(worktree: Path, model: str | None) -> list[str]:
     return command + ["-"]
 
 
-def codex_resume_command(model: str | None, session_id: str) -> list[str]:
+def codex_resume_command(
+    model: str | None, session_id: str, *, writable_dirs: tuple[Path, ...] = ()
+) -> list[str]:
     """Resume codex without flags unsupported by `codex exec resume`."""
     command = [
         "codex",
@@ -242,6 +265,12 @@ def codex_resume_command(model: str | None, session_id: str) -> list[str]:
         'approval_policy="never"',
         "--json",
     ]
+    if writable_dirs:
+        command += [
+            "-c",
+            "sandbox_workspace_write.writable_roots="
+            + json.dumps([str(directory) for directory in writable_dirs]),
+        ]
     if model:
         command += ["--model", model]
     return command + [session_id, "-"]
@@ -293,6 +322,13 @@ def main(argv: list[str]) -> int:
         print(f"signalbox dispatch: {exc}", file=sys.stderr)
         return 1
 
+    # #451: grant the shared build cache and run temp dir to avoid /tmp exhaustion.
+    target = build_target_dir()
+    tmp = run_tmp_dir(str(payload.get("run_id") or ""))
+    for directory in (target, tmp):
+        directory.mkdir(parents=True, exist_ok=True)
+    writable_dirs = (target, tmp)
+
     session = read_session(
         str(payload.get("run_id") or ""), str(payload.get("shard_id") or "")
     )
@@ -310,15 +346,19 @@ def main(argv: list[str]) -> int:
     def invocation(resume_id: str | None) -> tuple[list[str], str]:
         if runner == "codex":
             command = (
-                codex_resume_command(model, resume_id)
+                codex_resume_command(model, resume_id, writable_dirs=writable_dirs)
                 if resume_id
-                else codex_command(worktree, model)
+                else codex_command(worktree, model, writable_dirs=writable_dirs)
             )
             return command, codex_prompt(args.skill, payload)
         command = (
-            claude_resume_command(args.skill, payload, model, resume_id)
+            claude_resume_command(
+                args.skill, payload, model, resume_id, writable_dirs=writable_dirs
+            )
             if resume_id
-            else claude_command(args.skill, payload, model, minted_session_id)
+            else claude_command(
+                args.skill, payload, model, minted_session_id, writable_dirs=writable_dirs
+            )
         )
         # The sink already closed our stdin; hand the child an empty one rather
         # than a spent pipe.
@@ -331,6 +371,7 @@ def main(argv: list[str]) -> int:
     def run(resume_id: str | None) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
         command, stdin_text = invocation(resume_id)
         invocation_env = environment(payload, dict(os.environ))
+        invocation_env.update(CARGO_TARGET_DIR=str(target), TMPDIR=str(tmp))
         started = time.monotonic()
         completed = subprocess.run(
             command,

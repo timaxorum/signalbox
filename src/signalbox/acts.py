@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 
 from signalbox.paths import (
-    WorktreeMissing, branch_for, install_skills, require_worktree,
+    WorktreeMissing, branch_for, install_skills, require_worktree, run_tmp_dir,
     sessions_dir, state_dir, vault_dir, worktree_for,
 )
 
@@ -155,6 +155,7 @@ def release_workspace(payload: dict) -> dict:
     A halted run keeps its worktree on purpose. That tree is the evidence for
     why it halted, and reclaiming disk is not worth destroying it.
     """
+    shutil.rmtree(run_tmp_dir(payload["run_id"]), ignore_errors=True)
     root = worktree_for(payload)
     branch = branch_for(payload)
 

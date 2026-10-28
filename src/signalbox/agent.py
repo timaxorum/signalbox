@@ -25,8 +25,10 @@ from signalbox.identity import merge, project
 from signalbox.paths import (
     VaultMissing,
     WorktreeMissing,
+    build_target_dir,
     recall_vault_dir,
     require_worktree,
+    run_tmp_dir,
     vault_dir,
 )
 
@@ -70,6 +72,7 @@ NOTES_ROLES = frozenset({"plan-notes", "write-note"})
 # through `recall_vault_dir`, not `vault_dir`: an operator with no vault gets a
 # run without recalled context, never a run that cannot start.
 VAULT_ROLES = NOTES_ROLES | {"plan"}
+BUILD_ROLES = frozenset({"rebase", "remediate"})
 
 # Which model renders each judgment. This is a property of the role, not of the
 # run, because the judgments differ in kind. Planning and assessing get the
@@ -341,6 +344,20 @@ def run(role: str, payload: dict, model: str | None = None) -> tuple[dict, int]:
             "SIGNALBOX_VAULT": "" if vault is None else str(vault),
         }
 
+    build_dirs = []
+    if runner == "claude" and role in BUILD_ROLES:
+        # #451: keep cargo builds and temporary files off quota-limited /tmp.
+        target = build_target_dir()
+        tmp = run_tmp_dir(payload["run_id"])
+        target.mkdir(parents=True, exist_ok=True)
+        tmp.mkdir(parents=True, exist_ok=True)
+        build_dirs = [target, tmp]
+        subprocess_kwargs["env"] = {
+            **subprocess_kwargs.get("env", os.environ),
+            "CARGO_TARGET_DIR": str(target),
+            "TMPDIR": str(tmp),
+        }
+
     if runner == "codex":
         command = codex_command(workdir, invoked_model)
         stdin_text = codex_prompt_for(role, payload)
@@ -351,6 +368,8 @@ def run(role: str, payload: dict, model: str | None = None) -> tuple[dict, int]:
         command += ["--allowedTools", *tools_for(role)]
         if vault is not None:
             command += ["--add-dir", str(vault)]
+        for directory in build_dirs:
+            command += ["--add-dir", str(directory)]
         stdin_text = ""
 
     started = time.monotonic()

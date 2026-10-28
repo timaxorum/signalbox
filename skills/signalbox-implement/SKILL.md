@@ -89,6 +89,8 @@ Two independent mechanisms enforce this, so working around one does not help:
 
 ## Discipline
 
+Build with the CARGO_TARGET_DIR and TMPDIR you are given, and never redirect builds or temp files to /tmp.
+
 - **Tests belong in your shard.** If your declared files include a test file,
   the test is part of the work, not an afterthought.
 - **No placeholders.** `TODO`, `unimplemented!()`, `pass  # later`, a stubbed
