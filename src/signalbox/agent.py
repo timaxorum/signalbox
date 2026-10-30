@@ -28,6 +28,7 @@ from signalbox.paths import (
     VaultMissing,
     WorktreeMissing,
     build_target_dir,
+    ensure_run_tmp,
     recall_vault_dir,
     require_worktree,
     run_tmp_dir,
@@ -364,12 +365,11 @@ def run(role: str, payload: dict, model: str | None = None) -> tuple[dict, int]:
         target = build_target_dir()
         tmp = run_tmp_dir(payload["run_id"])
         target.mkdir(parents=True, exist_ok=True)
-        tmp.mkdir(parents=True, exist_ok=True)
         build_dirs = [target, tmp]
         subprocess_kwargs["env"] = {
             **subprocess_kwargs.get("env", os.environ),
             "CARGO_TARGET_DIR": str(target),
-            "TMPDIR": str(tmp),
+            "TMPDIR": str(ensure_run_tmp(payload["run_id"])),
         }
 
     # #473: every runner and role resolves bare pnpm to the repository pin.

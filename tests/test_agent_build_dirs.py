@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from signalbox import agent
+from signalbox import agent, paths
 
 
 @pytest.fixture
@@ -40,7 +40,9 @@ def test_claude_build_roles_receive_build_dirs(calls, tmp_path, monkeypatch, rol
         str(tmp),
     ]
     assert kwargs["env"]["CARGO_TARGET_DIR"] == str(target)
-    assert kwargs["env"]["TMPDIR"] == str(tmp)
+    assert kwargs["env"]["TMPDIR"] == str(paths.run_tmp_link("r1"))
+    assert paths.run_tmp_link("r1").is_symlink()
+    assert paths.run_tmp_link("r1").readlink() == tmp
     assert kwargs["env"]["BUILD_ENV_SENTINEL"] == "inherited"
     assert target.is_dir()
     assert tmp.is_dir()
@@ -97,4 +99,4 @@ def test_build_env_merges_with_vault_env(calls, tmp_path, monkeypatch):
     assert str(vault) in command
     assert kwargs["env"]["SIGNALBOX_VAULT"] == str(vault)
     assert kwargs["env"]["CARGO_TARGET_DIR"] == str(tmp_path / "target")
-    assert kwargs["env"]["TMPDIR"] == str(tmp_path / "tmp" / "r1")
+    assert kwargs["env"]["TMPDIR"] == str(paths.run_tmp_link("r1"))

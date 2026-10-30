@@ -6,10 +6,19 @@ agree on one worktree per run without any of them owning the answer.
 
 from __future__ import annotations
 
+import errno
+import hashlib
 import os
 import re
 import shutil
+import stat
+import uuid
 from pathlib import Path
+
+
+# 107 usable sun_path bytes minus 62 for policy_compiler's
+# '/axorum-compiler-<32 hex>/checker.sock' suffix, minus headroom.
+SHORT_TMP_BUDGET = 40
 
 
 def state_dir() -> Path:
@@ -46,6 +55,50 @@ def run_tmp_dir(run_id: str) -> Path:
         # field name a path outside state_dir()/tmp.
         raise ValueError(f"not a run id: {run_id!r}")
     return state_dir() / "tmp" / run_id
+
+
+def short_tmp_root() -> Path:
+    """#489: short socket paths live under a private, per-user root."""
+    if "SIGNALBOX_SHORT_TMP" in os.environ:
+        return Path(os.environ["SIGNALBOX_SHORT_TMP"])
+    return Path("/tmp") / f"sbx-{os.getuid()}"
+
+
+def run_tmp_link(run_id: str) -> Path:
+    """#489: return a stable short path without creating anything."""
+    run_tmp_dir(run_id)
+    return short_tmp_root() / hashlib.sha256(run_id.encode()).hexdigest()[:12]
+
+
+def ensure_run_tmp(run_id: str) -> Path:
+    """#489: atomically link a short socket-safe path to the run's temp tree."""
+    target = run_tmp_dir(run_id)
+    target.mkdir(parents=True, exist_ok=True)
+    root = short_tmp_root()
+    try:
+        root.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    info = os.lstat(root)
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077):
+        raise RuntimeError(f"unsafe short tmp root: {root}")
+    link = run_tmp_link(run_id)
+    if len(str(link)) > SHORT_TMP_BUDGET:
+        raise RuntimeError(f"short tmp link exceeds {SHORT_TMP_BUDGET} characters: {link}")
+    try:
+        if os.readlink(link) == str(target):
+            return link
+    except OSError as exc:
+        if exc.errno not in (errno.ENOENT, errno.EINVAL):
+            raise
+    temporary = root / f".link-{uuid.uuid4().hex}"
+    os.symlink(str(target), temporary)
+    try:
+        os.replace(temporary, link)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return link
 
 
 def sessions_dir(run_id: str) -> Path:
