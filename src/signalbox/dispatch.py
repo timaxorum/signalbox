@@ -33,6 +33,7 @@ from signalbox.emit import post_provenance
 from signalbox.paths import (
     SkillMissing,
     build_target_dir,
+    ensure_run_tmp,
     require_skill,
     run_tmp_dir,
     state_dir,
@@ -354,9 +355,10 @@ def main(argv: list[str]) -> int:
 
     # #451: grant the shared build cache and run temp dir to avoid /tmp exhaustion.
     target = build_target_dir()
-    tmp = run_tmp_dir(str(payload.get("run_id") or ""))
-    for directory in (target, tmp):
-        directory.mkdir(parents=True, exist_ok=True)
+    run_id = str(payload.get("run_id") or "")
+    tmp = run_tmp_dir(run_id)
+    target.mkdir(parents=True, exist_ok=True)
+    tmp_link = ensure_run_tmp(run_id)
     writable_dirs = (target, tmp)
 
     session = read_session(
@@ -401,7 +403,7 @@ def main(argv: list[str]) -> int:
     def run(resume_id: str | None) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
         command, stdin_text = invocation(resume_id)
         invocation_env = environment(payload, dict(os.environ))
-        invocation_env.update(CARGO_TARGET_DIR=str(target), TMPDIR=str(tmp))
+        invocation_env.update(CARGO_TARGET_DIR=str(target), TMPDIR=str(tmp_link))
         # #473: shard agents use the same pin as dependency preparation.
         invocation_env = with_pinned_pnpm(invocation_env, Path(worktree), state_dir())
         started = time.monotonic()

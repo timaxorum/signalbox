@@ -28,7 +28,7 @@ from signalbox.toolchain import (
 )
 
 from signalbox.paths import (
-    WorktreeMissing, branch_for, install_skills, require_worktree, run_tmp_dir,
+    WorktreeMissing, branch_for, install_skills, require_worktree, run_tmp_dir, run_tmp_link,
     sessions_dir, state_dir, vault_dir, worktree_for,
 )
 
@@ -228,6 +228,13 @@ def release_workspace(payload: dict) -> dict:
     why it halted, and reclaiming disk is not worth destroying it.
     """
     shutil.rmtree(run_tmp_dir(payload["run_id"]), ignore_errors=True)
+    link = run_tmp_link(payload["run_id"])
+    try:
+        if os.path.islink(link) and os.readlink(link) == str(run_tmp_dir(payload["run_id"])):
+            os.unlink(link)
+    except OSError:
+        # #489: link cleanup is best-effort, like the run directory cleanup.
+        pass
     root = worktree_for(payload)
     branch = branch_for(payload)
 

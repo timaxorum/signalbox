@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from signalbox import paths
+from signalbox import acts, paths
 
 
 def test_run_tmp_link_is_short_and_stable(monkeypatch):
@@ -63,3 +63,41 @@ def test_ensure_run_tmp_refuses_a_foreign_or_open_root(monkeypatch, tmp_path):
             paths.ensure_run_tmp("r1")
         assert not os.path.lexists(paths.run_tmp_link("r1"))
         assert list(root.iterdir()) == []
+
+
+def test_release_workspace_removes_the_link_not_its_neighbours(monkeypatch, tmp_path):
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    link = paths.ensure_run_tmp("r1")
+    other_link = paths.ensure_run_tmp("r2")
+    (link / "output").write_text("temporary")
+    (other_link / "output").write_text("keep")
+
+    result = acts.release_workspace({"run_id": "r1"})
+
+    assert result["ok"] is True
+    assert result["released"] is False
+    assert not os.path.lexists(link)
+    assert not paths.run_tmp_dir("r1").exists()
+    assert other_link.is_symlink()
+    assert os.readlink(other_link) == str(paths.run_tmp_dir("r2"))
+    assert (other_link / "output").read_text() == "keep"
+    assert acts.release_workspace({"run_id": "r1"})["ok"] is True
+
+
+def test_release_workspace_keeps_a_link_into_another_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    paths.run_tmp_dir("r1").mkdir(parents=True)
+    foreign_tmp = tmp_path / "another-state" / "tmp" / "r1"
+    foreign_tmp.mkdir(parents=True)
+    (foreign_tmp / "output").write_text("keep")
+    link = paths.run_tmp_link("r1")
+    link.symlink_to(foreign_tmp, target_is_directory=True)
+
+    result = acts.release_workspace({"run_id": "r1"})
+
+    assert result["ok"] is True
+    assert result["released"] is False
+    assert not paths.run_tmp_dir("r1").exists()
+    assert link.is_symlink()
+    assert os.readlink(link) == str(foreign_tmp)
+    assert (foreign_tmp / "output").read_text() == "keep"

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from signalbox import dispatch
+from signalbox import dispatch, paths
 
 
 @pytest.mark.parametrize("skill", ["signalbox-implement", "signalbox-fix"])
@@ -60,7 +60,7 @@ def test_dispatch_grants_build_directories(monkeypatch, tmp_path, skill, runner,
     command, kwargs = calls[0]
     assert kwargs["env"]["PATH"].split(os.pathsep)[0] == str(tmp_path / "shims/pnpm-10.31.0")
     assert kwargs["env"]["CARGO_TARGET_DIR"] == str(target)
-    assert kwargs["env"]["TMPDIR"] == str(tmp)
+    assert kwargs["env"]["TMPDIR"] == str(paths.run_tmp_link("r1"))
     assert command[0] == runner
     if runner == "claude":
         granted = [
