@@ -291,6 +291,7 @@ and a minimal environment (`PATH`, `HOME`, locale, `TMPDIR`): no credentials
 reach a repository's install. Each install has 300 s; the handler, 30 minutes. Preparation and re-entry return a `deps` list of `{dir, ok}` results;
 failed installs include an `error` tail and leave workspace preparation successful.
 Repositories without pnpm lockfiles return `deps: []`.
+An agent's `TMPDIR` is a short symlink under `/tmp/sbx-<uid>` to its run directory under state, so socket paths fit `sun_path` (#489).
 Agent and suite processes get a PATH shim that runs the pinned pnpm through
 `npx`, so the operator's global pnpm and its `minimumReleaseAge` never apply
 to a run (#473).
