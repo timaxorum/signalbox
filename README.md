@@ -413,6 +413,16 @@ When a run parks at the human gate, `notify` prints the paste-ready command
 no port to supply and no event envelope to construct. Approval enters through
 the control ingress and resumes only the named run.
 
+`signalbox watch <run-id> [--store PATH] [--poll S] [--timeout S]` prints a run's
+milestones as they happen. It exits 0 when the run completes, 2 when it needs
+approval (after printing `approve: signalbox approve <run-id>`), 3 when it halts,
+and 4 on timeout. `signalbox why <run-id> [--store PATH] [--json]` summarises what
+is blocking the run: plan objections, abandoned shards, review findings, an open
+gate, the halt reason, a merge failure, and the next command. It exits 1 with
+`no events for <run-id>` when the run has no events. Both commands only read the
+event store, which defaults to `~/.local/share/emergent/signalbox/events.db`, and
+never write to it (#490).
+
 To cancel a run, use `signalbox cancel <run-id> --reason "wrong base"`
 (the reason defaults to `operator`). Cancellation enters through control as
 `run.cancel-requested`, stops that run's worktree processes, and halts it even

@@ -24,7 +24,7 @@ ACT_COMMANDS = frozenset({
 
 COMMANDS = ACT_COMMANDS | {
     "primitive", "check-plan", "agent", "dispatch", "emit", "dashboard", "paths",
-    "topology-diagram",
+    "topology-diagram", "watch", "why",
 }
 
 
@@ -104,6 +104,11 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(f"vault    {vault}")
         return 0
+
+    if command in ("watch", "why"):
+        from signalbox import runlog
+
+        return runlog.main([command, *rest])
 
     if command in ACT_COMMANDS:
         from signalbox import acts
