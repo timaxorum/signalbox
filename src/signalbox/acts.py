@@ -828,6 +828,29 @@ def pr_state_is_merged(raw: str) -> bool:
     )
 
 
+def update_branch(payload: dict) -> dict:
+    """Persist the update budget before asking GitHub to update the PR."""
+    from signalbox.dispatch import pending_read_path
+
+    marker = pending_read_path("pr", payload)
+    try:
+        stored = json.loads(marker.read_text())
+        if not isinstance(stored, dict):
+            raise ValueError("not an object")
+    except (OSError, ValueError):
+        return {**payload, "ok": False, "error": f"no pr marker at {marker}"}
+    stored["merge_behind_attempt"] = payload["merge_behind_attempt"]
+    marker.write_text(json.dumps(stored))
+    cmd = ["gh", "api", "-X", "PUT",
+           f"repos/{{owner}}/{{repo}}/pulls/{payload['pr']}/update-branch"]
+    if payload.get("sha"):
+        cmd += ["-f", f"expected_head_sha={payload['sha']}"]
+    code, out, err = _run(cmd, cwd=str(worktree_for(payload)), timeout=60)
+    if code:
+        return {**payload, "ok": False, "error": err or out}
+    return {**payload, "ok": True}
+
+
 def merge_pr(payload: dict) -> dict:
     root = str(worktree_for(payload))
     pr = str(payload.get("pr"))
@@ -1474,6 +1497,7 @@ def main(command: str, argv: list[str]) -> int:
         "push-branch": push_branch,
         "open-pr": open_pr,
         "merge-pr": merge_pr,
+        "update-branch": update_branch,
         "close-issue": close_issue,
         "check-details": check_details,
         "map-ci-findings": map_ci_findings,

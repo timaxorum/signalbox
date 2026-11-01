@@ -623,6 +623,7 @@ def test_remediation_run_built_resume_reaches_the_reentry_payload():
         ("route-gate-invalid", {"run_id": "sb-87", "decision": "maybe"}, "gate.invalid-verdict"),
         ("route-push-failed", {"run_id": "sb-87", "ok": False}, "branch.push-failed"),
         ("route-open-failed", {"run_id": "sb-87", "ok": False}, "pr.open-failed"),
+        ("route-update-branch-failed", {"run_id": "sb-87", "ok": False}, "pr.update-failed"),
         ("route-merge-pr-failed", {"run_id": "sb-87", "ok": False}, "pr.merge-failed"),
     ],
 )
@@ -645,7 +646,7 @@ def test_notes_planning_fans_out_with_merge_only_after_checks_pass():
     planner = named(HANDLERS, "plan-notes")
     merger = named(HANDLERS, "merge-pr")
     assert planner["subscribes"] == ["checks.passed"]
-    assert merger["subscribes"] == ["checks.passed"]
+    assert merger["subscribes"] == ["checks.passed", "checks.repassed"]
     assert "pr.merged" not in planner["subscribes"]
 
 
@@ -659,7 +660,8 @@ def test_run_completion_is_only_published_by_the_full_completion_router():
     assert joiner["subscribes"][:2] == ["pr.merged", "notes.synced"]
     assert joiner["subscribes"][2:] == [
         "pr.merge-failed", "remediation.requested", "checks.observed",
-        "checks.reported", "approval.requested", "approval.granted",
+        "checks.reported", "pr.merge-behind", "pr.branch-updated",
+        "approval.requested", "approval.granted",
     ]
     args = " ".join(joiner["args"])
     assert "--key run_id" in args
@@ -719,7 +721,8 @@ def test_a_zero_note_plan_needs_the_merge_arm_to_reach_the_run_terminal():
     assert completion["subscribes"][:2] == ["pr.merged", "notes.synced"]
     assert completion["subscribes"][2:] == [
         "pr.merge-failed", "remediation.requested", "checks.observed",
-        "checks.reported", "approval.requested", "approval.granted",
+        "checks.reported", "pr.merge-behind", "pr.branch-updated",
+        "approval.requested", "approval.granted",
     ]
     assert completion["publishes"] == ["completion.closed"]
     assert "--arms" in completion["args"], (
@@ -2368,3 +2371,49 @@ def test_cancel_request_is_marked_and_stopped_by_one_sink():
     ]
     assert "publishes" not in stopper
     assert [s["name"] for s in SINKS if "stop-run" in s["args"]] == ["stop-run"]
+
+
+def test_behind_merge_updates_without_spending_remediation():
+    behind = {"run_id": "sb-1", "ok": False, "stranded_topic": "pr.merge-failed",
+              "error": "…not up to date with the base branch", "remediation_attempt": 2}
+    for attempt in range(10):
+        payload = {**behind, "merge_behind_attempt": attempt}
+        assert route("route-remediation-open", payload) is None
+        assert route("route-merge-behind", payload) == {
+            "run_id": "sb-1", "remediation_attempt": 2,
+            "merge_behind_attempt": attempt + 1,
+        }
+    assert route("route-merge-behind", behind)["merge_behind_attempt"] == 1
+
+
+def test_behind_merge_falls_back_after_ten_updates():
+    behind = {"run_id": "sb-1", "ok": False, "stranded_topic": "pr.merge-failed",
+              "error": "…not up to date with the base branch", "merge_behind_attempt": 10}
+    assert route("route-merge-behind", behind) is None
+    assert route("route-remediation-open", behind) == {**behind, "remediation_attempt": 1}
+
+
+def test_other_merge_failures_still_open_remediation():
+    for error in ("conflict", None, {"message": "refused"}):
+        payload = {"run_id": "sb-1", "ok": False,
+                   "stranded_topic": "pr.merge-failed", "error": error}
+        assert route("route-merge-behind", payload) is None
+        assert route("route-remediation-open", payload) == {**payload, "remediation_attempt": 1}
+    payload = {"run_id": "sb-1", "ok": False, "stranded_topic": "pr.update-failed",
+               "error": "not up to date with the base branch"}
+    assert route("route-remediation-open", payload) == {**payload, "remediation_attempt": 1}
+
+
+def test_a_repeated_green_suite_merges_without_replanning_notes():
+    first = {"run_id": "sb-1", "conclusion": "success"}
+    assert route("route-checks-passed", first) == first
+    assert route("route-checks-repassed", first) is None
+    repeated = {**first, "merge_behind_attempt": 1}
+    assert route("route-checks-passed", repeated) is None
+    assert route("route-checks-repassed", repeated) == repeated
+    assert named(HANDLERS, "merge-pr")["subscribes"] == ["checks.passed", "checks.repassed"]
+    assert named(HANDLERS, "plan-notes")["subscribes"] == ["checks.passed"]
+    assert route("route-update-branch-updated", {**repeated, "ok": True}) == {
+        **repeated, "ok": True,
+    }
+    assert route("route-update-branch-failed", {**repeated, "ok": True}) is None

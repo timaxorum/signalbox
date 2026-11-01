@@ -219,6 +219,7 @@ def test_every_carried_scalar_survives_the_agent_environment_seam():
         # The remediation loop's own budget and its declared re-entry topic are
         # read off the envelope by fixed topology guards, never by a shard agent.
         "remediation_attempt",
+        "merge_behind_attempt",
         "resume_topic",
     }
     fields = set(CARRIED_KEYS) - non_scalar_agent_keys

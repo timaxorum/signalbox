@@ -750,6 +750,7 @@ def test_join_completion_subscribes_to_its_keepalives():
     controls = {
         "--keepalive": [
             "pr.merge-failed", "remediation.requested", "checks.observed", "checks.reported",
+            "pr.merge-behind", "pr.branch-updated",
         ],
         "--pause-on": ["approval.requested"],
         "--resume-on": ["approval.granted"],

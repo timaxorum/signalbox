@@ -1714,3 +1714,59 @@ def test_catch_up_reports_unreachable_services(tmp_path, monkeypatch, capsys, fa
     result = json.loads(capsys.readouterr().out)
     assert result["ok"] is False
     assert "unavailable" in result["error"]
+
+
+@pytest.mark.parametrize("sha", [None, "head-sha"])
+def test_update_branch_records_the_counter_before_updating(tmp_path, monkeypatch, sha):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    payload = {"run_id": "sb-1", "pr": 7, "merge_behind_attempt": 2}
+    if sha:
+        payload["sha"] = sha
+    marker = pending_path("pr", payload)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    stored = {"run_id": "sb-1", "pr": 7, "delivered_suites": [123], "extra": "kept"}
+    marker.write_text(json.dumps(stored))
+    calls = []
+    def run(cmd, cwd=None, timeout=None):
+        assert json.loads(marker.read_text()) == {**stored, "merge_behind_attempt": 2}
+        calls.append((cmd, cwd, timeout))
+        return 0, "", ""
+    monkeypatch.setattr(acts, "_run", run)
+    assert acts.update_branch(payload) == {**payload, "ok": True}
+    expected = ["gh", "api", "-X", "PUT", "repos/{owner}/{repo}/pulls/7/update-branch"]
+    if sha:
+        expected += ["-f", "expected_head_sha=head-sha"]
+    assert calls == [(expected, str(acts.worktree_for(payload)), 60)]
+
+
+@pytest.mark.parametrize("contents", [None, "{invalid", "[]"])
+def test_update_branch_refuses_without_a_marker(tmp_path, monkeypatch, contents):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    payload = {"run_id": "sb-1", "pr": 7, "merge_behind_attempt": 1}
+    marker = pending_path("pr", payload)
+    if contents is not None:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(contents)
+    def run(*args, **kwargs):
+        pytest.fail("gh must not run without a readable marker")
+    monkeypatch.setattr(acts, "_run", run)
+    assert acts.update_branch(payload) == {
+        **payload, "ok": False, "error": f"no pr marker at {marker}",
+    }
+
+
+@pytest.mark.parametrize("stdout,stderr,error", [
+    ("out", "refused", "refused"), ("refusal on stdout", "", "refusal on stdout"),
+])
+def test_update_branch_reports_gh_refusal(tmp_path, monkeypatch, stdout, stderr, error):
+    from signalbox import acts
+    monkeypatch.setenv("SIGNALBOX_STATE", str(tmp_path))
+    payload = {"run_id": "sb-1", "pr": 7, "merge_behind_attempt": 3}
+    marker = pending_path("pr", payload)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps({"pr": 7}))
+    monkeypatch.setattr(acts, "_run", lambda *args, **kwargs: (1, stdout, stderr))
+    assert acts.update_branch(payload) == {**payload, "ok": False, "error": error}
+    assert json.loads(marker.read_text()) == {"pr": 7, "merge_behind_attempt": 3}

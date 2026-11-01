@@ -6,7 +6,7 @@ The name is from railway signaling. A signal box is where the interlocking lives
 
 ## The shape
 
-One engine. Four sources, one hundred thirty-five handlers, twelve sinks, and no script that knows what comes next.
+One engine. Four sources, one hundred forty handlers, twelve sinks, and no script that knows what comes next.
 
 ```
 route-run-requested ─> [run.requested] ─> prepare-workspace, dashboard
@@ -103,7 +103,8 @@ route-check-ran ─> [shard.check-ran] ─> dashboard
 └─> to: route-signing-ok, route-signing-refused, dashboard, trace
 [checks.reported]
 ├─< from: rehydrate-pr
-└─> to: route-checks-passed, route-checks-failed, join-completion, dashboard
+└─> to: route-checks-passed, route-checks-repassed, route-checks-failed,
+        join-completion, dashboard
 [scope.violated (halt)]
 ├─< from: scope-guard
 └─> to: join-stage, route-ci-shard-terminal-halted, clear-pending, dashboard,
@@ -134,6 +135,7 @@ route-rebase-resigned ─> [rebase.resigned] ─> dashboard, trace
 route-push-pushed ─> [branch.pushed] ─> open-pr, dashboard
 route-push-failed ─> [branch.push-failed] ─> route-remediation-open, dashboard
 route-checks-passed ─> [checks.passed] ─> merge-pr, plan-notes, dashboard
+route-checks-repassed ─> [checks.repassed] ─> merge-pr, dashboard
 route-checks-failed ─> [checks.failed] ─> detail-failed-checks, dashboard
 route-approved ─> [shard.approved] ─> join-stage, dashboard
 [shard.changes-requested]
@@ -187,7 +189,7 @@ route-detail-failed ─> [checks.detail-failed] ─> map-ci-to-findings, dashboa
 └─> to: close-issue, join-completion, dashboard
 [pr.merge-failed]
 ├─< from: route-merge-pr-failed
-└─> to: route-remediation-open, join-completion, dashboard
+└─> to: route-remediation-open, route-merge-behind, join-completion, dashboard
 route-notes-plan-accepted ─> [notes.plan-accepted] ─> split-notes, dashboard
 [notes.invalid-verdict (halt)]
 ├─< from: route-notes-plan-invalid
@@ -204,6 +206,9 @@ route-ci-commit-ok ─> [run.rebuilt] ─> rebase-branch, dashboard
 [ci.commit-refused (halt)]
 ├─< from: route-ci-commit-refused-halted
 └─> to: route-ci-commit-refused-terminal, dashboard
+[pr.merge-behind]
+├─< from: route-merge-behind
+└─> to: update-branch, join-completion, dashboard
 [issue.close-attempted]
 ├─< from: close-issue
 └─> to: route-issue-closed, route-issue-close-failed, dashboard
@@ -214,9 +219,18 @@ split-notes, join-notes ─> [notes.synced] ─> join-completion, dashboard
 [ci.findings-refused (halt)]
 ├─< from: route-ci-findings-refused-halted
 └─> to: route-ci-findings-refused-terminal, dashboard
+[pr.update-attempted]
+├─< from: update-branch
+└─> to: route-update-branch-updated, route-update-branch-failed, dashboard
 route-issue-closed ─> [issue.closed] ─> dashboard
 route-issue-close-failed ─> [issue.close-failed] ─> dashboard
 write-note ─> [note.written] ─> join-notes, dashboard
+[pr.branch-updated]
+├─< from: route-update-branch-updated
+└─> to: join-completion, dashboard
+[pr.update-failed]
+├─< from: route-update-branch-failed
+└─> to: route-remediation-open, dashboard
 ```
 
 The remaining ten formerly stranded outcomes share a bounded diagnosis path:
@@ -232,6 +246,7 @@ The remaining ten formerly stranded outcomes share a bounded diagnosis path:
 [pr.merge-failed] ─> route-remediation-open
 [pr.open-failed] ─> route-remediation-open
 [review.invalid-verdict] ─> route-remediation-open
+[pr.update-failed] ─> route-remediation-open
 [remediation.requested]
 ├─< from: route-remediation-open, guard-remediation-retry
 └─> to: remediate, join-completion, dashboard
