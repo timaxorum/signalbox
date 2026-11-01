@@ -656,7 +656,11 @@ def test_run_completion_is_only_published_by_the_full_completion_router():
 
     joiner = named(HANDLERS, "join-completion")
     assert joiner["path"] == "signalbox"
-    assert joiner["subscribes"] == ["pr.merged", "notes.synced"]
+    assert joiner["subscribes"][:2] == ["pr.merged", "notes.synced"]
+    assert joiner["subscribes"][2:] == [
+        "pr.merge-failed", "remediation.requested", "checks.observed",
+        "checks.reported", "approval.requested", "approval.granted",
+    ]
     args = " ".join(joiner["args"])
     assert "--key run_id" in args
     assert "--arms pr.merged,notes.synced" in args
@@ -712,7 +716,11 @@ def test_a_zero_note_plan_needs_the_merge_arm_to_reach_the_run_terminal():
     assert "notes.synced" in splitter["publishes"]
 
     completion = named(HANDLERS, "join-completion")
-    assert completion["subscribes"] == ["pr.merged", "notes.synced"]
+    assert completion["subscribes"][:2] == ["pr.merged", "notes.synced"]
+    assert completion["subscribes"][2:] == [
+        "pr.merge-failed", "remediation.requested", "checks.observed",
+        "checks.reported", "approval.requested", "approval.granted",
+    ]
     assert completion["publishes"] == ["completion.closed"]
     assert "--arms" in completion["args"], (
         "a count join could mistake duplicate notes.synced events for both arms"

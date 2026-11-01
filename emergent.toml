@@ -1535,8 +1535,11 @@ name = "join-completion"
 path = "signalbox"
 args = ["primitive", "join-terminal", "--key", "run_id",
         "--arms", "pr.merged,notes.synced", "--timeout-seconds", "1800",
+        "--keepalive", "pr.merge-failed,remediation.requested,checks.observed,checks.reported",
+        "--pause-on", "approval.requested", "--resume-on", "approval.granted",
         "--publish-as", "completion.closed"]
-subscribes = ["pr.merged", "notes.synced"]
+subscribes = ["pr.merged", "notes.synced", "pr.merge-failed", "remediation.requested",
+              "checks.observed", "checks.reported", "approval.requested", "approval.granted"]
 publishes = ["completion.closed"]
 
 # Inherited from #66: notes.plan-failed has no run_id, so that failure cannot

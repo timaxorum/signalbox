@@ -61,10 +61,16 @@ route-prepare-ready ─> [workspace.ready] ─> fetch-issue, dashboard
 ├─< from: audit-plan (codex; adversarial)
 └─> to: route-plan-approved, route-audit-changes, route-audit-exhausted,
         route-audit-invalid, dashboard
+[completion.closed (halt)]
+├─< from: join-completion
+└─> to: route-completion-full, route-completion-short, dashboard
 route-plan-approved ─> [plan.accepted] ─> open-first-stage, dashboard
 [run.built]
 ├─< from: join-run, guard-remediation-resume-built
 └─> to: rebase-branch, dashboard
+[run.completed]
+├─< from: route-completion-full
+└─> to: release-workspace, clear-pr-pending, dashboard, trace
 [stage.opened]
 ├─< from: open-first-stage, guard-stages-advance
 └─> to: split-shards, dashboard
@@ -85,17 +91,19 @@ route-check-ran ─> [shard.check-ran] ─> dashboard
         clear-pending, dashboard
 [approval.granted]
 ├─< from: route-approval-granted
-└─> to: push-branch, clear-approval-pending, dashboard
+└─> to: push-branch, join-completion, clear-approval-pending, dashboard
 [run.cancel-requested (halt)]
 ├─< from: route-cancel-requested
 └─> to: route-cancel-halted, stop-run, dashboard
-route-check-suite ─> [checks.observed] ─> rehydrate-pr, dashboard
+[checks.observed]
+├─< from: route-check-suite
+└─> to: rehydrate-pr, join-completion, dashboard
 [branch.signing-attempted]
 ├─< from: verify-signatures
 └─> to: route-signing-ok, route-signing-refused, dashboard, trace
 [checks.reported]
 ├─< from: rehydrate-pr
-└─> to: route-checks-passed, route-checks-failed, dashboard
+└─> to: route-checks-passed, route-checks-failed, join-completion, dashboard
 [scope.violated (halt)]
 ├─< from: scope-guard
 └─> to: join-stage, route-ci-shard-terminal-halted, clear-pending, dashboard,
@@ -179,7 +187,7 @@ route-detail-failed ─> [checks.detail-failed] ─> map-ci-to-findings, dashboa
 └─> to: close-issue, join-completion, dashboard
 [pr.merge-failed]
 ├─< from: route-merge-pr-failed
-└─> to: route-remediation-open, dashboard
+└─> to: route-remediation-open, join-completion, dashboard
 route-notes-plan-accepted ─> [notes.plan-accepted] ─> split-notes, dashboard
 [notes.invalid-verdict (halt)]
 ├─< from: route-notes-plan-invalid
@@ -188,7 +196,7 @@ guard-stages-exhaust ─> [stages.exhausted] ─> dashboard
 route-gate-auto ─> [gate.cleared] ─> push-branch, dashboard
 [approval.requested]
 ├─< from: route-gate-human
-└─> to: mark-approval-pending, dashboard, notify
+└─> to: join-completion, mark-approval-pending, dashboard, notify
 [ci.findings-attempted]
 ├─< from: map-ci-to-findings
 └─> to: route-ci-findings-ok, route-ci-findings-refused-halted, dashboard
@@ -200,9 +208,6 @@ route-ci-commit-ok ─> [run.rebuilt] ─> rebase-branch, dashboard
 ├─< from: close-issue
 └─> to: route-issue-closed, route-issue-close-failed, dashboard
 split-notes, join-notes ─> [notes.synced] ─> join-completion, dashboard
-[completion.closed (halt)]
-├─< from: join-completion
-└─> to: route-completion-full, route-completion-short, dashboard
 [ci.fix-ready (halt)]
 ├─< from: route-ci-findings-ok
 └─> to: guard-ci-rounds-continue, guard-ci-rounds-exhaust, dashboard
@@ -212,9 +217,6 @@ split-notes, join-notes ─> [notes.synced] ─> join-completion, dashboard
 route-issue-closed ─> [issue.closed] ─> dashboard
 route-issue-close-failed ─> [issue.close-failed] ─> dashboard
 write-note ─> [note.written] ─> join-notes, dashboard
-[run.completed]
-├─< from: route-completion-full
-└─> to: release-workspace, clear-pr-pending, dashboard, trace
 ```
 
 The remaining ten formerly stranded outcomes share a bounded diagnosis path:
@@ -232,7 +234,7 @@ The remaining ten formerly stranded outcomes share a bounded diagnosis path:
 [review.invalid-verdict] ─> route-remediation-open
 [remediation.requested]
 ├─< from: route-remediation-open, guard-remediation-retry
-└─> to: remediate, dashboard
+└─> to: remediate, join-completion, dashboard
 [remediation.assessed]
 ├─< from: remediate
 └─> to: guard-remediation-retry, guard-remediation-exhaust,

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,9 @@ from signalbox.primitives.join_terminal import (
 )
 from signalbox.primitives.split_notes import note_events, publish_events, synced_event
 from signalbox.primitives.split_shards import events_for, reopened_shards
+
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class Recorder:
@@ -58,13 +63,16 @@ def _notes_synced(run="r1"):
     }
 
 
-def _completion_joiner(recorder, timeout=0):
+def _completion_joiner(recorder, timeout=0, *, keepalive=(), pause_on=(), resume_on=()):
     return Joiner(
         "run_id",
         None,
         recorder,
         timeout=timeout,
         arms=("pr.merged", "notes.synced"),
+        keepalive=keepalive,
+        pause_on=pause_on,
+        resume_on=resume_on,
     )
 
 
@@ -639,3 +647,117 @@ def test_the_stage_subscriptions_survive_a_composite_key():
 
     assert default_subscriptions(("run_id", "stage_id")) == default_subscriptions("stage_id")
     assert "shard.approved" in default_subscriptions(("run_id", "stage_id"))
+
+
+@pytest.mark.asyncio
+async def test_keepalive_restarts_the_completion_timer():
+    recorder = Recorder()
+    joiner = _completion_joiner(recorder, timeout=0.1, keepalive=("checks.reported",))
+    await joiner.accept(_notes_synced(), topic="notes.synced")
+    entry = joiner.pending[("r1",)]
+    original_timer = entry.timer
+    await asyncio.sleep(0.06)
+    await joiner.accept({"run_id": "r1"}, topic="checks.reported")
+    assert entry.timer is not original_timer
+    await asyncio.sleep(0.06)
+    assert recorder.published == []
+    assert entry.results == [_notes_synced()]
+    assert entry.satisfied_arms == {"notes.synced"}
+    await joiner.accept(_pr_merged(), topic="pr.merged")
+    assert len(recorder.published) == 1
+    assert recorder.published[0]["timed_out"] is False
+
+
+@pytest.mark.asyncio
+async def test_paused_join_never_times_out_until_resumed(capsys):
+    recorder = Recorder()
+    joiner = _completion_joiner(
+        recorder, timeout=0.05, keepalive=("checks.reported",),
+        pause_on=("approval.requested",), resume_on=("approval.granted",),
+    )
+    await joiner.accept(_notes_synced(), topic="notes.synced")
+    entry = joiner.pending[("r1",)]
+    await joiner.accept({"run_id": "r1"}, topic="approval.requested")
+    assert entry.paused
+    assert entry.timer is None
+    await joiner.accept({"run_id": "r1"}, topic="checks.reported")
+    await joiner.accept({}, topic="approval.granted")
+    assert "join: message without run_id" in capsys.readouterr().err
+    await asyncio.sleep(0.1)
+    assert recorder.published == []
+    assert entry.paused
+    assert entry.timer is None
+    assert entry.results == [_notes_synced()]
+    assert entry.satisfied_arms == {"notes.synced"}
+    await joiner.accept({"run_id": "r1"}, topic="approval.granted")
+    assert not entry.paused
+    assert entry.timer is not None
+    assert recorder.published == []
+    await asyncio.sleep(0.1)
+    assert len(recorder.published) == 1
+    assert recorder.published[0]["timed_out"] is True
+    assert recorder.published[0]["received"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option,topic", [
+    ("keepalive", "checks.reported"),
+    ("pause_on", "approval.requested"),
+    ("resume_on", "approval.granted"),
+])
+async def test_keepalive_before_any_arm_creates_nothing(option, topic, capsys):
+    recorder = Recorder()
+    joiner = _completion_joiner(recorder, timeout=0.01, **{option: (topic,)})
+    await joiner.accept({"run_id": "r1"}, topic=topic)
+    assert joiner.pending == {}
+    assert joiner.closed == set()
+    assert len(capsys.readouterr().err.splitlines()) == 1
+    await asyncio.sleep(0.03)
+    assert recorder.published == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("option,topic", [
+    ("keepalive", "checks.reported"),
+    ("pause_on", "approval.requested"),
+    ("resume_on", "approval.granted"),
+])
+async def test_keepalive_after_close_is_ignored(option, topic, capsys):
+    recorder = Recorder()
+    joiner = _completion_joiner(recorder, timeout=0.01, **{option: (topic,)})
+    await joiner.accept(_pr_merged(), topic="pr.merged")
+    await joiner.accept(_notes_synced(), topic="notes.synced")
+    await joiner.accept({"run_id": "r1"}, topic=topic)
+    assert joiner.pending == {}
+    assert joiner.closed == {("r1",)}
+    assert len(capsys.readouterr().err.splitlines()) == 1
+    await asyncio.sleep(0.03)
+    assert len(recorder.published) == 1
+
+
+@pytest.mark.parametrize("option", ["keepalive", "pause_on", "resume_on"])
+def test_keepalive_topics_need_arms(option):
+    with pytest.raises(ValueError, match="keepalive, pause_on and resume_on require arms"):
+        Joiner("run_id", "count", Recorder(), **{option: ("progress",)})
+    with pytest.raises(ValueError, match="overlap"):
+        _completion_joiner(Recorder(), **{option: ("pr.merged",)})
+
+
+def test_join_completion_subscribes_to_its_keepalives():
+    config = tomllib.loads((ROOT / "emergent.toml").read_text())
+    joiner = next(h for h in config["handlers"] if h["name"] == "join-completion")
+    args = joiner["args"]
+    controls = {
+        "--keepalive": [
+            "pr.merge-failed", "remediation.requested", "checks.observed", "checks.reported",
+        ],
+        "--pause-on": ["approval.requested"],
+        "--resume-on": ["approval.granted"],
+    }
+    for flag, topics in controls.items():
+        assert args[args.index(flag) + 1].split(",") == topics
+    assert joiner["subscribes"] == [
+        "pr.merged", "notes.synced",
+        *(topic for topics in controls.values() for topic in topics),
+    ]
+    assert args[args.index("--timeout-seconds") + 1] == "1800"
