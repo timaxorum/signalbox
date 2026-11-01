@@ -1090,13 +1090,13 @@ args = ["-s", "branch.push-failed", "-s", "branch.rebase-conflicted",
         "-s", "branch.rebase-invalid-verdict", "-s", "checks.silent",
         "-s", "gate.blocked", "-s", "gate.invalid-verdict",
         "-s", "plan.invalid-verdict", "-s", "pr.merge-failed",
-        "-s", "pr.open-failed", "-s", "review.invalid-verdict",
+        "-s", "pr.update-failed", "-s", "pr.open-failed", "-s", "review.invalid-verdict",
         "--publish-as", "remediation.requested", "--",
-        "jq", "-c", '.remediation_attempt = ((.remediation_attempt // 0) + 1)']
+        "jq", "-c", 'select(((.stranded_topic == "pr.merge-failed") and ((.error // "") | tostring | test("not up to date with the base branch")) and ((.merge_behind_attempt // 0) < 10)) | not) | .remediation_attempt = ((.remediation_attempt // 0) + 1)']
 subscribes = ["branch.push-failed", "branch.rebase-conflicted",
               "branch.rebase-invalid-verdict", "checks.silent", "gate.blocked",
               "gate.invalid-verdict", "plan.invalid-verdict", "pr.merge-failed",
-              "pr.open-failed", "review.invalid-verdict"]
+              "pr.open-failed", "review.invalid-verdict", "pr.update-failed"]
 publishes = ["remediation.requested"]
 
 [[handlers]]
@@ -1238,9 +1238,17 @@ publishes = ["pr.open-failed"]
 name = "route-checks-passed"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "checks.reported", "--publish-as", "checks.passed", "--",
-        "jq", "-c", 'select(.conclusion == "success")']
+        "jq", "-c", 'select(.conclusion == "success" and ((.merge_behind_attempt // 0) == 0))']
 subscribes = ["checks.reported"]
 publishes = ["checks.passed"]
+
+[[handlers]]
+name = "route-checks-repassed"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "checks.reported", "--publish-as", "checks.repassed", "--",
+        "jq", "-c", 'select(.conclusion == "success" and (((.merge_behind_attempt // 0) == 0) | not))']
+subscribes = ["checks.reported"]
+publishes = ["checks.repassed"]
 
 [[handlers]]
 name = "route-checks-failed"
@@ -1393,11 +1401,43 @@ subscribes = ["shard.abandoned", "shard.invalid-verdict", "shard.silent", "scope
 publishes = ["run.halted"]
 
 [[handlers]]
+name = "route-merge-behind"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "pr.merge-failed", "--publish-as", "pr.merge-behind", "--",
+        "jq", "-c", 'select((.stranded_topic == "pr.merge-failed") and ((.error // "") | tostring | test("not up to date with the base branch")) and ((.merge_behind_attempt // 0) < 10)) | del(.ok, .error, .stranded_topic) | .merge_behind_attempt = ((.merge_behind_attempt // 0) + 1)']
+subscribes = ["pr.merge-failed"]
+publishes = ["pr.merge-behind"]
+
+[[handlers]]
+name = "update-branch"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "pr.merge-behind", "--publish-as", "pr.update-attempted",
+        "-t", "90000", "--", "signalbox", "update-branch"]
+subscribes = ["pr.merge-behind"]
+publishes = ["pr.update-attempted"]
+
+[[handlers]]
+name = "route-update-branch-updated"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "pr.update-attempted", "--publish-as", "pr.branch-updated", "--",
+        "jq", "-c", 'select(.ok == true)']
+subscribes = ["pr.update-attempted"]
+publishes = ["pr.branch-updated"]
+
+[[handlers]]
+name = "route-update-branch-failed"
+path = "~/.local/share/emergent/primitives/bin/exec-handler"
+args = ["-s", "pr.update-attempted", "--publish-as", "pr.update-failed", "--",
+        "jq", "-c", 'select(.ok == false) | . + {stranded_topic: "pr.update-failed"}']
+subscribes = ["pr.update-attempted"]
+publishes = ["pr.update-failed"]
+
+[[handlers]]
 name = "merge-pr"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
-args = ["-s", "checks.passed", "--publish-as", "pr.merge-attempted",
+args = ["-s", "checks.passed", "-s", "checks.repassed", "--publish-as", "pr.merge-attempted",
         "-t", "120000", "--", "signalbox", "merge-pr"]
-subscribes = ["checks.passed"]
+subscribes = ["checks.passed", "checks.repassed"]
 publishes = ["pr.merge-attempted"]
 
 [[handlers]]
@@ -1535,11 +1575,12 @@ name = "join-completion"
 path = "signalbox"
 args = ["primitive", "join-terminal", "--key", "run_id",
         "--arms", "pr.merged,notes.synced", "--timeout-seconds", "1800",
-        "--keepalive", "pr.merge-failed,remediation.requested,checks.observed,checks.reported",
+        "--keepalive", "pr.merge-failed,remediation.requested,checks.observed,checks.reported,pr.merge-behind,pr.branch-updated",
         "--pause-on", "approval.requested", "--resume-on", "approval.granted",
         "--publish-as", "completion.closed"]
 subscribes = ["pr.merged", "notes.synced", "pr.merge-failed", "remediation.requested",
-              "checks.observed", "checks.reported", "approval.requested", "approval.granted"]
+              "checks.observed", "checks.reported", "pr.merge-behind", "pr.branch-updated",
+              "approval.requested", "approval.granted"]
 publishes = ["completion.closed"]
 
 # Inherited from #66: notes.plan-failed has no run_id, so that failure cannot
@@ -1642,7 +1683,7 @@ subscribes = ["exec.output", "exec.exit",
               "branch.rebase-failed", "branch.rebase-invalid-verdict", "branch.rebased",
               "branch.signing-attempted", "branch.signed", "branch.signing-refused", "branch.signing-errored", "rebase.resigned",
               "checks.detail-attempted", "checks.detail-failed", "checks.detailed",
-              "checks.failed", "checks.observed", "checks.passed", "checks.reported",
+              "checks.failed", "checks.observed", "checks.passed", "checks.reported", "checks.repassed",
               "checks.silent", "checks.unknown-pr",
               "ci.changes-requested", "ci.commit-attempted", "ci.commit-refused",
               "ci.findings-attempted", "ci.findings-refused", "ci.fix-approved", "ci.fix-ready",
@@ -1656,6 +1697,7 @@ subscribes = ["exec.output", "exec.exit",
               "plan.draft-failed", "plan.invalid-verdict", "plan.rejected",
               "plan.submitted", "plan.verified", "pr.merge-attempted", "pr.merge-failed", "pr.merged",
               "pr.open-attempted", "pr.open-failed", "pr.opened",
+              "pr.merge-behind", "pr.update-attempted", "pr.branch-updated", "pr.update-failed",
               "remediation.assessed", "remediation.closed", "remediation.failed",
               "remediation.invalid-verdict", "remediation.requested",
               "review.failed", "review.invalid-verdict", "review.submitted", "run.built", "run.rebuilt",
