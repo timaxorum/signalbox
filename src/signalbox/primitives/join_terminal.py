@@ -51,6 +51,7 @@ class Pending:
     satisfied_arms: set[str] = field(default_factory=set)
     arm_payloads: dict[str, dict] = field(default_factory=dict)
     timer: asyncio.Task | None = None
+    paused: bool = False
 
 
 def expected_count(payload: dict, count_field: str) -> int | None:
@@ -144,9 +145,21 @@ class Joiner:
         timeout: float = 3600.0,
         arms: tuple[str, ...] | None = None,
         carry_payloads: bool = False,
+        keepalive: tuple[str, ...] = (),
+        pause_on: tuple[str, ...] = (),
+        resume_on: tuple[str, ...] = (),
     ):
         if carry_payloads and arms is None:
             raise ValueError("carry_payloads requires arms")
+        if (keepalive or pause_on or resume_on) and arms is None:
+            raise ValueError("keepalive, pause_on and resume_on require arms")
+        controls = set(keepalive + pause_on + resume_on)
+        if controls.intersection(arms or ()):
+            raise ValueError("arms must not overlap keepalive, pause_on or resume_on")
+        self.keepalive = set(keepalive)
+        self.pause_on = set(pause_on)
+        self.resume_on = set(resume_on)
+        self.control_topics = controls
         self.keys = as_keys(key)
         # How the key reads in a diagnostic line, e.g. "run_id+stage_id".
         self.key = "+".join(self.keys)
@@ -229,6 +242,25 @@ class Joiner:
             )
             return
 
+        if topic in self.control_topics:
+            entry = self.pending.get(key_value)
+            if entry is None:
+                print(
+                    f"join: control {topic!r} without pending {self.key}={key_value}, ignored",
+                    file=sys.stderr,
+                )
+                return
+            if entry.timer is not None:
+                entry.timer.cancel()
+                entry.timer = None
+            if topic in self.pause_on:
+                entry.paused = True
+            elif topic in self.resume_on:
+                entry.paused = False
+            if not entry.paused and self.timeout > 0:
+                entry.timer = asyncio.create_task(self._expire(key_value))
+            return
+
         if self.arm_set is not None and topic not in self.arm_set:
             print(f"join: arrival from unknown arm {topic!r}, ignored", file=sys.stderr)
             return
@@ -302,6 +334,9 @@ def main() -> None:
         action="store_true",
         help="in arms mode, carry each full payload keyed by topic",
     )
+    parser.add_argument("--keepalive", default="")
+    parser.add_argument("--pause-on", default="")
+    parser.add_argument("--resume-on", default="")
     parser.add_argument("--publish-as", required=True)
     parser.add_argument("--timeout-seconds", type=float, default=3600.0)
     parser.add_argument("--subscribe", action="append", default=None)
@@ -330,6 +365,14 @@ def main() -> None:
         parser.error("--arms must name distinct topics")
     if args.carry_payloads and arms is None:
         parser.error("--carry-payloads requires --arms")
+    keepalive, pause_on, resume_on = (
+        tuple(topic.strip() for topic in value.split(",") if topic.strip())
+        for value in (args.keepalive, args.pause_on, args.resume_on)
+    )
+    if (keepalive or pause_on or resume_on) and arms is None:
+        parser.error("--keepalive, --pause-on and --resume-on require --arms")
+    if set(keepalive + pause_on + resume_on).intersection(arms or ()):
+        parser.error("--arms must not overlap --keepalive, --pause-on or --resume-on")
     keys = tuple(args.key)
     if len(set(keys)) != len(keys):
         parser.error("--key must name distinct fields")
@@ -340,8 +383,13 @@ def main() -> None:
         args.timeout_seconds,
         arms=arms,
         carry_payloads=args.carry_payloads,
+        keepalive=keepalive,
+        pause_on=pause_on,
+        resume_on=resume_on,
     )
-    subscribes = args.subscribe or list(arms or default_subscriptions(keys))
+    subscribes = args.subscribe or list(
+        (arms or tuple(default_subscriptions(keys))) + keepalive + pause_on + resume_on
+    )
     name = os.environ.get("EMERGENT_PRIMITIVE_NAME", f"join-{'-'.join(keys)}")
     asyncio.run(run_handler(name, subscribes, accept))
 
