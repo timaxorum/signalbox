@@ -59,6 +59,20 @@ def test_assess_preserves_only_inbound_suite_scope(notes_agent, suite_scope):
     assert len(notes_agent.posted) == 1
 
 
+def test_assess_requires_human_for_declared_gate(notes_agent):
+    notes_agent.completed.stdout = json.dumps(
+        {"decision": "clear", "requires_human": False}
+    )
+    payload = {"run_id": "r572", "declared_gate": "Tim"}
+
+    verdict, code = agent.run("assess", payload)
+
+    assert code == 0
+    assert verdict["decision"] == "clear"
+    assert verdict["requires_human"] is True
+    assert verdict["declared_gate"] == "Tim"
+
+
 @pytest.mark.parametrize("dotdir", [False, True])
 def test_empty_notes_vault_returns_identity_without_model(notes_agent, monkeypatch, dotdir):
     """#452: absent notes bypass the model, including metadata-only vaults."""

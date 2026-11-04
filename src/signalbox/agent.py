@@ -463,6 +463,8 @@ def run(role: str, payload: dict, model: str | None = None) -> tuple[dict, int]:
                 result[key] = payload[key]
             else:
                 result.pop(key, None)
+        if payload.get("declared_gate"):
+            result["requires_human"] = True
     if merged.envelope_overridden:
         result["identity_overridden"] = merged.envelope_overridden
     if merged.product_overridden:

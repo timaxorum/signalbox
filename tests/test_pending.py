@@ -31,6 +31,7 @@ def _shard(**overrides) -> dict:
         "stage_count": 3,
         "round": 1,
         "ci_origin": "post-merge",
+        "declared_gate": "Tim",
         "ci_round": 2,
         "session_id": "session-123",
         "declared": ["src/a.py"],

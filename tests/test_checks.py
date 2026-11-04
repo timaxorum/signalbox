@@ -435,6 +435,49 @@ def test_open_pr_rejects_an_existing_head_pr_against_the_wrong_base(
     assert out["run_id"] == "sb-56"
 
 
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ("\n \n> Issue metadata\n> **Order:** Do this. Gate: Tim (x).\n\nSpec", "Tim (x)"),
+        ("> **Order:** Do this. Gate: auto (dev tooling only).", None),
+        ("> **Order:** Do this. gate: AUTO.", None),
+        ("> **Order:** Do this.", None),
+        (None, None),
+        ("> **Order:** Do this.\n\nGate: Tim", None),
+        ("> **Order:** Do this.\n> Gate: Tim", None),
+        ("> Gate: Tim\n> **Order:** Do this.", None),
+        ("Spec\n> **Order:** Gate: Tim", None),
+        ("> **Order:** Gate: auto;", None),
+        ("> **Order:** Gate: Tim (x)", "Tim (x)"),
+    ],
+)
+def test_declared_gate_parses_the_order_line(body, expected):
+    assert acts.declared_gate(body) == expected
+
+
+@pytest.mark.parametrize("launch", [False, True])
+@pytest.mark.parametrize("gate, expected", [("Tim (y).", "Tim (y)"), ("auto", None), (None, None)])
+def test_fetch_issue_carries_declared_gate(monkeypatch, launch, gate, expected):
+    body = "> **Order:** Do this." + (f" Gate: {gate}" if gate else "")
+    monkeypatch.setattr(
+        acts, "_run",
+        lambda *a, **k: (0, json.dumps({"title": "Issue", "body": body}), ""),
+    )
+    payload = {"issue": 572, "declared_gate": "Tim"}
+    if launch:
+        payload["body"] = body
+
+    fetched = acts.fetch_issue(payload)
+
+    assert fetched["ok"] is True
+    if expected is None:
+        assert "declared_gate" not in fetched
+    else:
+        assert fetched["declared_gate"] == expected
+    if launch:
+        assert fetched["source"] == "launch"
+
+
 def test_fetch_issue_failure_and_success_preserve_identity(monkeypatch):
     payload = {"run_id": "sb-66", "issue": 66, "stage_count": 3}
     monkeypatch.setattr(acts, "_run", lambda *a, **k: (1, "", "not found"))
@@ -496,6 +539,19 @@ def test_the_title_survives_the_agent_environment_seam():
 
     assert "title" in _ENV_KEYS
     assert identity_from_env(stamped)["title"] == "Keep this title"
+
+
+def test_declared_gate_survives_the_agent_environment_seam():
+    from signalbox.dispatch import environment
+    from signalbox.emit import identity_from_env
+
+    stamped = environment({"declared_gate": "Tim"}, {})
+    assert stamped["SIGNALBOX_DECLARED_GATE"] == "Tim"
+    assert identity_from_env(stamped)["declared_gate"] == "Tim"
+
+    stamped = environment({"declared_gate": None}, {"SIGNALBOX_DECLARED_GATE": "stale"})
+    assert "SIGNALBOX_DECLARED_GATE" not in stamped
+    assert "declared_gate" not in identity_from_env(stamped)
 
 
 def test_a_none_title_does_not_round_trip_as_the_string_none():
