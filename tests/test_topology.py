@@ -1771,6 +1771,32 @@ def test_gate_routers_preserve_suite_approval_requirement(payload, matched):
     assert outputs[matched] == expected
 
 
+
+@pytest.mark.parametrize(
+    "untested_paths,reason",
+    [
+        (None, "issue declares Gate: Tim"),
+        ([], "issue declares Gate: Tim"),
+        (["a.py"], "issue declares Gate: Tim; untested paths: a.py"),
+    ],
+)
+def test_gate_human_reason_names_declared_gate(untested_paths, reason):
+    payload = {
+        "decision": "clear", "requires_human": True, "declared_gate": "Tim",
+    }
+    if untested_paths is not None:
+        payload["untested_paths"] = untested_paths
+    routers = (
+        "route-gate-auto", "route-gate-human",
+        "route-gate-blocked", "route-gate-invalid",
+    )
+    outputs = {name: route(name, payload) for name in routers}
+    assert [name for name, output in outputs.items() if output is not None] == [
+        "route-gate-human",
+    ]
+    assert outputs["route-gate-human"] == {**payload, "reason": reason}
+
+
 def test_errored_suite_still_routes_to_run_halted():
     payload = {"run_id": "sb-462", "errored": True, "ran": False}
     errored = route("route-suite-errored", payload)

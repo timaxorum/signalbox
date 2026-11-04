@@ -1054,7 +1054,7 @@ publishes = ["gate.cleared"]
 name = "route-gate-human"
 path = "~/.local/share/emergent/primitives/bin/exec-handler"
 args = ["-s", "gate.assessed", "--publish-as", "approval.requested", "--",
-        "jq", "-c", 'select(.decision == "needs_human" or (.decision == "clear" and .requires_human == true)) | if .decision == "clear" then . + {reason: "untested paths: \(.untested_paths // [] | join(", "))"} else . end']
+        "jq", "-c", 'select(.decision == "needs_human" or (.decision == "clear" and .requires_human == true)) | if .decision == "clear" then . + {reason: (if .declared_gate then "issue declares Gate: \(.declared_gate)" + (if (.untested_paths // [] | length) > 0 then "; untested paths: " + (.untested_paths | join(", ")) else "" end) else "untested paths: \(.untested_paths // [] | join(", "))" end)} else . end']
 subscribes = ["gate.assessed"]
 publishes = ["approval.requested"]
 

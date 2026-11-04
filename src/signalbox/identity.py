@@ -28,6 +28,8 @@ CARRIED_KEYS: tuple[str, ...] = (
     # Issue #80: every PR opened as "signalbox (#N)" because the issue title
     # died at the plan splitter.
     "title",
+    # internal#568: Gate: Tim was declared, but the PR auto-merged.
+    "declared_gate",
     "base_sha",
     # The base the PR opens against. Carried for the same reason base_sha is: it
     # is decided at launch and must not be re-derived later. `gh pr create` will

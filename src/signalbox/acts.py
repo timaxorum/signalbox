@@ -270,6 +270,26 @@ def release_workspace(payload: dict) -> dict:
 # ── issue ────────────────────────────────────────────────────────────────────
 
 
+def declared_gate(body: str | None) -> str | None:
+    """Read the declared gate only from the issue header's Order line."""
+    lines = iter((body or "").splitlines())
+    for line in lines:
+        if line.strip():
+            break
+    else:
+        return None
+    for line in (line, *lines):
+        if not line.startswith(">"):
+            break
+        if "**Order:**" not in line:
+            continue
+        match = re.search(r"Gate:\s*(\S+)", line, re.IGNORECASE)
+        if match is None or match.group(1).rstrip(".,;:").lower() == "auto":
+            return None
+        return line[match.start(1):].strip().removesuffix(".").strip()
+    return None
+
+
 def fetch_issue(payload: dict) -> dict:
     """Enough of the issue to start a run and to name the PR at the end.
 
@@ -285,7 +305,13 @@ def fetch_issue(payload: dict) -> dict:
     # GitHub remote. There is then nothing to fetch, and saying so is more
     # honest than calling gh and failing.
     if str(payload.get("body") or "").strip():
-        return {**payload, "ok": True, "source": "launch"}
+        result = {**payload, "ok": True, "source": "launch"}
+        gate = declared_gate(payload.get("body"))
+        if gate is not None:
+            result["declared_gate"] = gate
+        else:
+            result.pop("declared_gate", None)
+        return result
 
     issue = payload.get("issue")
     repo = payload.get("repo")
@@ -301,13 +327,19 @@ def fetch_issue(payload: dict) -> dict:
         return {**payload, "ok": False, "error": f"unreadable issue response: {exc}"}
     if not isinstance(data, dict) or data.get("title") is None:
         return {**payload, "ok": False, "error": "issue response carried no title"}
-    return {
+    result = {
         **payload,
         "ok": True,
         "title": data.get("title"),
         "body": data.get("body"),
         "labels": [label.get("name") for label in data.get("labels") or []],
     }
+    gate = declared_gate(data.get("body"))
+    if gate is not None:
+        result["declared_gate"] = gate
+    else:
+        result.pop("declared_gate", None)
+    return result
 
 
 # ── suite ────────────────────────────────────────────────────────────────────

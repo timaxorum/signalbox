@@ -142,6 +142,7 @@ def environment(payload: dict, base: dict[str, str]) -> dict[str, str]:
         "SIGNALBOX_CI_ORIGIN": ("ci_origin", None),
         "SIGNALBOX_CI_ROUND": ("ci_round", None),
         "SIGNALBOX_TITLE": ("title", ""),
+        "SIGNALBOX_DECLARED_GATE": ("declared_gate", None),
         "SIGNALBOX_INTENT": ("intent", ""),
         "SIGNALBOX_SESSION_ID": ("session_id", ""),
     }
