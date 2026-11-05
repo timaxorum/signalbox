@@ -56,6 +56,40 @@ def test_watch_exits_2_on_approval_and_prints_the_command(tmp_path):
     assert out.getvalue().endswith("approve: signalbox approve r\n")
 
 
+def test_watch_follows_past_a_granted_approval(tmp_path):
+    path = _store(tmp_path, [
+        ("approval.requested", {"run_id": "r"}),
+        ("approval.granted", {"run_id": "r"}),
+        ("run.completed", {"run_id": "r"}),
+    ])
+    out = io.StringIO()
+    assert runlog.watch("r", path, out=out) == 0
+    assert "approval.requested" in out.getvalue()
+    assert "approval.granted" in out.getvalue()
+    assert "approve: signalbox approve" not in out.getvalue()
+
+
+def test_watch_keeps_waiting_after_a_granted_approval(tmp_path):
+    path = _store(tmp_path, [
+        ("approval.requested", {"run_id": "r"}),
+        ("approval.granted", {"run_id": "r"}),
+    ])
+    out = io.StringIO()
+    assert runlog.watch("r", path, poll=0.005, timeout=0.02, out=out) == 4
+    assert "approve: signalbox approve" not in out.getvalue()
+
+
+def test_watch_exits_2_on_a_new_gate_after_a_grant(tmp_path):
+    path = _store(tmp_path, [
+        ("approval.requested", {"run_id": "r"}),
+        ("approval.granted", {"run_id": "r"}),
+        ("approval.requested", {"run_id": "r"}),
+    ])
+    out = io.StringIO()
+    assert runlog.watch("r", path, out=out) == 2
+    assert out.getvalue().endswith("approve: signalbox approve r\n")
+
+
 def test_watch_follows_new_events_until_completed(tmp_path):
     path = _store(tmp_path, [("run.requested", {"run_id": "r"})])
     def complete():
