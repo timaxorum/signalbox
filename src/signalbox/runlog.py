@@ -65,14 +65,16 @@ def watch(run_id, store, *, poll=2.0, timeout=None, out=sys.stdout) -> int:
     started = time.monotonic()
     after = 0
     while True:
-        for event in run_events(run_id, store, after):
+        events = run_events(run_id, store, after)
+        last_grant = max((event.rowid for event in events if event.type == "approval.granted"), default=0)
+        for event in events:
             after = event.rowid
             if event.type not in MILESTONES:
                 continue
             print(line(event), file=out, flush=True)
             if event.type == "run.completed":
                 return 0
-            if event.type == "approval.requested":
+            if event.type == "approval.requested" and event.rowid > last_grant:
                 print(f"approve: signalbox approve {run_id}", file=out, flush=True)
                 return 2
             if event.type == "run.halted":
